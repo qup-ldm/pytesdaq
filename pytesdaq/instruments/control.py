@@ -630,8 +630,12 @@ class Control:
 
                 if self.is_tes_signal_gen_inst_common():
                     if self._signal_generator_name == 'rigolDG852':
-                        # case function generator dont have dc mode, 
-                        # use 10MHz 2mVpp square wave to reduce affacts.
+                        # Rigol DG852 ONLY: emulate a DC output with a
+                        # 10MHz, minimum Vpp (2mVpp) square wave; the DC
+                        # level is then set by the square wave offset.
+                        # All other supplies use a true 'dc' shape below.
+                        self._signal_generator_inst.set_shape(
+                            'square', source=signal_gen_num)
                         self._signal_generator_inst.set_frequency(
                             10000000, unit='Hz',
                             source=signal_gen_num)

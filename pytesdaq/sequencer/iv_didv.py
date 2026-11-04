@@ -203,16 +203,28 @@ class IV_dIdV(Sequencer):
             print('INFO: Tune signal generator range base on max TES bias then '
                   'set auto range off!')
             
+            # Rigol DG852 only: DC bias is emulated with a 10MHz,
+            # minimum Vpp square wave whose offset is the DC level.
+            # Other supplies: plain DC output set via the offset
+            # (a square wave is only used if dIdV is enabled).
+            is_rigol = (self._instruments_inst.signal_generator_name
+                        == 'rigolDG852')
+            use_square_wave = is_rigol or self._enable_didv
+
             for channel in self._detector_channels:
 
-                # set autorange on  
+                # set autorange on
                 signal_gen_controller.set_auto_range('on')
 
-                # turn on output
+                # turn on output (sets shape "square")
                 self._instruments_inst.set_signal_gen_onoff(
                     'on',
                     detector_channel=channel)
-                
+
+                # non-Rigol, IV only: true DC output
+                if not use_square_wave:
+                    signal_gen_controller.set_shape('dc')
+
                 # set TES bias
                 self._instruments_inst.set_tes_bias(
                     np.max(sweep_config['tes_bias_vect']),
@@ -221,29 +233,35 @@ class IV_dIdV(Sequencer):
                     use_net_resistance=single_TES_bias_source
                 )
 
-                signal_gen_voltage = 2
-                if 'signal_gen_voltage' in didv_config:
-                    signal_gen_voltage = didv_config['signal_gen_voltage']
-
-                signal_gen_frequency = 10000000
-                if 'signal_gen_frequency' in didv_config:
-                    signal_gen_frequency = didv_config['signal_gen_frequency']
-             
                 signal_gen_offset = signal_gen_controller.get_offset()*1000
                 print(f"INFO: max func gen offset is {signal_gen_offset} mV")
-                    
-                self._instruments_inst.set_signal_gen_params(
-                    detector_channel=channel,
-                    source='tes', 
-                    voltage=signal_gen_voltage,
-                    voltage_unit='mV',
-                    frequency=signal_gen_frequency,
-                    frequency_unit='Hz',
-                    shape='square',
-                    use_net_resistance = single_signal_gen_source
-                )
 
-                print("INFO: Set signal gen to square wave")
+                if use_square_wave:
+
+                    signal_gen_voltage = 2
+                    if 'signal_gen_voltage' in didv_config:
+                        signal_gen_voltage = didv_config['signal_gen_voltage']
+
+                    signal_gen_frequency = None
+                    if is_rigol:
+                        signal_gen_frequency = 10000000
+                    if 'signal_gen_frequency' in didv_config:
+                        signal_gen_frequency = didv_config['signal_gen_frequency']
+
+                    self._instruments_inst.set_signal_gen_params(
+                        detector_channel=channel,
+                        source='tes',
+                        voltage=signal_gen_voltage,
+                        voltage_unit='mV',
+                        frequency=signal_gen_frequency,
+                        frequency_unit='Hz',
+                        shape='square',
+                        use_net_resistance = single_signal_gen_source
+                    )
+
+                    print("INFO: Set signal gen to square wave")
+                else:
+                    print("INFO: Set signal gen to DC output")
             
                 # set auto range off
                 signal_gen_controller.set_auto_range('off')
