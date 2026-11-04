@@ -16,12 +16,12 @@
 [setup] 
 
 # Facility number: 1 = McKinsey Leiden Fridge, 2 = Pyle Cryoconcept Fridge,
-#                  3 = UMass  4 = LBL Blue Fors
-facility = 4
+#                  3 = UMass  4 = LBL Blue Fors   5 = Kamioka
+facility = 5
 
 # Fridge run number and  date/time fridge was at base temperature
 # (syntax: mm/dd/yyyy HH:MM)
-fridge_run = 99
+fridge_run = 
 fridge_run_start = 05/26/2025 19:00
 
 # raw data base path (run# directory automatically   created)

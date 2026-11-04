@@ -27,7 +27,7 @@ class NITask(Task):
         self._lock_daq=True
         self._lock_file = '/tmp/nidaq.lock'
         self._log_file = str()
-        self._verbose = True
+        self._verbose = False#True
         self._quiet = False
         
         # ADC config / Detector configure

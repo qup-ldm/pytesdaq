@@ -15,6 +15,7 @@ from pytesdaq.instruments.keysight import KeysightDSOX1200
 from pytesdaq.instruments.keithley import Keithley2400
 from pytesdaq.instruments.agilent import Agilent33500B
 from pytesdaq.instruments.rigol import RigolDG800
+from pytesdaq.instruments.rigol import RigolDG800Pro
 import pytesdaq.io.redis as redis
 from pytesdaq.utils import connection_utils
 import pytesdaq.utils.remote as remote
@@ -618,11 +619,21 @@ class Control:
             else:
 
                 if self.is_tes_signal_gen_inst_common():
-                    # case common with TES bias / SG controllers
-                    # -> only set to 'dc', no change output
-                    self._signal_generator_inst.set_shape(
-                        'dc', source=signal_gen_num
-                    )
+                    if self._signal_generator_name == 'rigolDG852':
+                        # case function generator dont have dc mode, 
+                        # use 10MHz 2mVpp square wave to reduce affacts.
+                        self._signal_generator_inst.set_frequency(
+                            10000000, unit='Hz',
+                            source=signal_gen_num)
+                        self._signal_generator_inst.set_amplitude(
+                            0.002, unit='Vpp',
+                            source=signal_gen_num)
+                    else:
+                        # case common with TES bias / SG controllers
+                        # -> only set to 'dc', no change output
+                        self._signal_generator_inst.set_shape(
+                            'dc', source=signal_gen_num
+                        )
                 else:
                     # turn off output
                     self._signal_generator_inst.set_generator_onoff(
@@ -2750,8 +2761,32 @@ class Control:
                 # convert to uAmps
                 param_val *= 1e6 
 
+            elif self._tes_controller_name == 'rigolDG852':
+
+                ## get parameter
+                #keithley_params = self._config.get_device_parameters('keithley2400')
+
+                ## voltage source ?
+                voltage_source = True
+
+                if voltage_source:
+                    resistance =  self.get_tes_bias_resistance(
+                        tes_channel=tes_channel,
+                        detector_channel=detector_channel,
+                        adc_id=adc_id,
+                        adc_channel=adc_channel
+                    )
+
+                    voltage = self._tes_controller_inst.get_offset()
+                    param_val = voltage/resistance
+                else:
+                    param_val = self._tes_controller_inst.get_current()
+
+                # convert to uAmps
+                param_val *= 1e6 
+
             else:
-                print('ERROR: Unknown TES controller!')
+                print('ERROR: Unknown TES controller! **************')
 
             return param_val
         
@@ -3086,6 +3121,24 @@ class Control:
 
                 self._tes_controller_inst.set_offset(voltage)
                 self._tes_controller_inst.set_generator_onoff('on')                
+            elif self._tes_controller_name == 'rigolDG852':
+                # get TES bias resistor
+                resistance =  self.get_tes_bias_resistance(
+                    tes_channel=tes_channel,
+                    detector_channel=detector_channel,
+                    adc_id=adc_id,
+                    adc_channel=adc_channel
+                )
+                
+                voltage = resistance*value*1e-6
+
+                if use_net_resistance:
+                    self._tes_controller_inst.set_load_resistance(self._tes_controller_load)
+                else:
+                    self._tes_controller_inst.set_load_resistance(int(resistance))
+
+                self._tes_controller_inst.set_offset(voltage)
+                self._tes_controller_inst.set_generator_onoff('on')                
             else:
                 raise ValueError('ERROR: Unknown TES controller!')
 
@@ -3363,6 +3416,19 @@ class Control:
                                   verbose=self._verbose,
                                   raise_errors=self._raise_errors)
             )
+
+        # ----------------
+        # rigolDG852
+        # ----------------
+        if self._tes_controller_name == 'rigolDG852':
+            address = self._config.get_device_visa_address('rigolDG852')
+            self._tes_controller_inst = (
+                RigolDG800Pro(
+                    address,
+                    visa_library=visa_library,
+                    verbose=self._verbose,
+                    raise_errors=self._raise_errors)
+            )
                     
 
         # ----------------
@@ -3405,6 +3471,15 @@ class Control:
                                      raise_errors=self._raise_errors)
                 )
 
+            elif self._signal_generator_name == 'rigolDG852':
+                self._signal_generator_inst = (
+                    RigolDG800Pro(address,
+                               visa_library=visa_library,
+                               attenuation=attenuation,
+                               verbose=self._verbose,
+                               raise_errors=self._raise_errors)
+                )
+
             else:
                 raise ValueError('ERROR: Unrecognized signal generator '
                                  + self._signal_generator_name)
@@ -3437,6 +3512,15 @@ class Control:
                 
                 self._laser_signal_generator_inst = (
                     RigolDG800(address,
+                               attenuation=attenuation,
+                               verbose=self._verbose,
+                               raise_errors=self._raise_errors)
+                )
+
+            elif self._laser_signal_generator_name == 'rigolDG852':
+                
+                self._laser_signal_generator_inst = (
+                    RigolDG800Pro(address,
                                attenuation=attenuation,
                                verbose=self._verbose,
                                raise_errors=self._raise_errors)
