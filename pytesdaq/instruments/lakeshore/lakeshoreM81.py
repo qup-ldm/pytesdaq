@@ -20,6 +20,25 @@ Setup file example ([temperature_controllers] section):
   lakeshoreM81_setup = model:M81, com_port:/dev/ttyUSB0, baud_rate:921600
   lakeshoreM81_chan1 = name:RTD1, global_number:1, source:S1
   lakeshoreM81_heater1 = name:heaterS1, global_number:31
+
+Function generator API (TES bias / dIdV signal generator)
+---------------------------------------------------------
+The same object can be used as "tes_controller" and/or
+"signal_generator" (setup.ini [lakeshoreM81] section). It then exposes
+the Rigol-like API used by pytesdaq Control (set_offset, set_amplitude,
+set_shape, set_frequency, set_generator_onoff, set_load_resistance,
+set_auto_range, ...). Generator source=1 is M81 slot "source_slot".
+
+The source module (BCS-10/CS-10) is a current source. Control drives
+function generators in volts across a load (TES bias resistance, or
+net resistance of parallel bias lines) set with set_load_resistance(),
+so volts are converted with I_out = V / R_load. Changing the load only
+changes the conversion, never the output current.
+
+M81 levels: DC shape -> output = AMPLitude register (offset ignored);
+AC shapes -> output = OFFSet + AMPLitude (peak) * waveform. The DC
+offset (TES bias) and AC peak-to-peak amplitude are kept separately and
+the right registers are written when the shape changes.
 """
 
 from lakeshore import SSMSystem, XIPInstrumentException
@@ -36,6 +55,17 @@ _DEFAULT_BAUD_RATE = 921600
 _DEFAULT_TCP_PORT = 7777
 _SOURCE_NAMES = ['S1', 'S2', 'S3']
 
+# function generator shapes
+_SHAPE_MAP = {'dc': 'DC',
+              'sine': 'SINUSOID',
+              'sinusoid': 'SINUSOID',
+              'square': 'SQUARE',
+              'triangle': 'TRIANGLE'}
+_SHAPE_REV_MAP = {'DC': 'dc',
+                  'SINUSOID': 'sine',
+                  'SQUARE': 'square',
+                  'TRIANGLE': 'triangle'}
+
 
 class LakeshoreM81():
     """
@@ -44,7 +74,16 @@ class LakeshoreM81():
 
     def __init__(self, instrument_name='lakeshoreM81', model_number='M81',
                  ip_address=None, tcp_port=None, com_port=_DEFAULT_COM_PORT,
-                 baud_rate=_DEFAULT_BAUD_RATE, raise_errors=True, verbose=True):
+                 baud_rate=_DEFAULT_BAUD_RATE, source_slot=1, load_resistance=None,
+                 raise_errors=True, verbose=True):
+        """
+        source_slot: int
+           function generator API: M81 source slot (1-3) used for
+           generator source=1 (source=n -> slot source_slot+n-1)
+        load_resistance: float (optional)
+           function generator API: initial load resistance [Ohms]
+           for V <-> I conversion
+        """
 
         # instrument name and number (e.g. "lakeshore2" -> 2)
         self._instrument_name = instrument_name
@@ -74,6 +113,15 @@ class LakeshoreM81():
 
         # resistance source (S1..S3) per measure channel, from config
         self._resistance_sources = dict()
+
+        # function generator state (per source slot)
+        self._sg_source_slot = int(source_slot)
+        self._sg_default_load = (float(load_resistance)
+                                 if load_resistance is not None else None)
+        self._sg_load_resistance = dict()
+        self._sg_offset_current = dict()     # DC bias [A]
+        self._sg_ac_current_pp = dict()      # AC peak-to-peak [A]
+        self._sg_initialized_slots = set()
 
         # channel properties
         self._channel_properties = ['instrument_name', 'module_name', 'module_type', 'module_number',
@@ -114,6 +162,16 @@ class LakeshoreM81():
     @property
     def com_port(self):
         return self._com_port
+
+    @property
+    def address(self):
+        if self._ip_address is not None:
+            return 'TCPIP::' + str(self._ip_address) + '::' + str(self._tcp_port)
+        return str(self._com_port)
+
+    @property
+    def is_connected(self):
+        return self._inst is not None
 
     @property
     def instrument(self):
@@ -238,10 +296,20 @@ class LakeshoreM81():
         except Exception:
             raise ValueError('ERROR: Lakeshore setup file has unknown format!')
 
+        # already connected (shared instance) -> apply resistance sources now
+        if self._inst is not None:
+            for chan, source in self._resistance_sources.items():
+                self.set_channel_parameters(channel_numbers=chan, resistance_source=source)
+
     def connect(self):
         """
-        Open connection
+        Open connection (no-op if already connected, so that a single
+        instance can be shared as TES controller / signal generator /
+        temperature controller)
         """
+
+        if self._inst is not None:
+            return
 
         if str(self._model_number).upper().lstrip('M') != '81':
             raise ValueError('ERROR: This driver only supports Lakeshore M81 (model = '
@@ -287,9 +355,10 @@ class LakeshoreM81():
             else:
                 self._inst.disconnect_tcp()
             self._inst = None
+            self._sg_initialized_slots = set()
 
-        if self._verbose:
-            print('INFO: Lakeshore M81 disconnected!')
+            if self._verbose:
+                print('INFO: Lakeshore M81 disconnected!')
 
     def get_modules(self):
         """
@@ -803,6 +872,155 @@ class LakeshoreM81():
                 module.enable()
 
     # ------------------------------------------------------------------
+    # Function generator API (TES bias / dIdV signal generator)
+    # Rigol-like interface used by pytesdaq Control; "source" is the
+    # generator number (1 -> M81 slot source_slot)
+    # ------------------------------------------------------------------
+
+    def device_idn(self):
+        self._check_connected()
+        return self._inst.query('*IDN?')
+
+    def set_load_resistance(self, load, source=1):
+        """
+        Set load resistance [Ohms] used to convert volts to amps.
+        Does not change the output current.
+        """
+        if load is None:
+            return
+        load = float(load)
+        if load <= 0:
+            raise ValueError('ERROR: load resistance should be > 0!')
+        self._sg_load_resistance[self._sg_slot(source)] = load
+
+    def get_load_resistance(self, source=1):
+        slot = self._sg_slot(source)
+        return self._sg_load_resistance.get(slot, self._sg_default_load)
+
+    def set_shape(self, shape, source=1):
+        """
+        shape: 'dc', 'sine', 'square', 'triangle'
+        """
+        key = str(shape).lower()
+        if key not in _SHAPE_MAP:
+            raise ValueError('ERROR: M81 shape "' + str(shape) + '" not supported. '
+                             + 'Valid: ' + str(list(_SHAPE_MAP.keys())))
+        slot = self._sg_slot(source)
+        self._sg_read_levels(slot)
+        self._inst.get_source_module(slot).set_shape(_SHAPE_MAP[key])
+        self._sg_write_levels(slot)
+        self._debug_print('S' + str(slot) + ' shape = ' + _SHAPE_MAP[key])
+
+    def get_shape(self, source=1):
+        module = self._inst.get_source_module(self._sg_slot(source))
+        resp = str(module.get_shape()).strip().upper()
+        return _SHAPE_REV_MAP.get(resp, resp.lower())
+
+    def set_frequency(self, frequency, source=1, unit='Hz'):
+        freq = float(frequency)
+        if unit == 'kHz':
+            freq *= 1e3
+        elif unit == 'MHz':
+            freq *= 1e6
+        elif unit != 'Hz':
+            raise ValueError('ERROR: Unit must be Hz, kHz, or MHz')
+        slot = self._sg_slot(source)
+        self._inst.get_source_module(slot).set_frequency(freq)
+        self._debug_print('S' + str(slot) + ' frequency = ' + str(freq))
+
+    def get_frequency(self, source=1, unit='Hz'):
+        module = self._inst.get_source_module(self._sg_slot(source))
+        freq = float(module.get_frequency())
+        if unit == 'kHz':
+            freq /= 1e3
+        elif unit == 'MHz':
+            freq /= 1e6
+        return freq
+
+    def set_phase(self, phase, source=1):
+        if float(phase) != 0 and self._verbose:
+            print('WARNING: Phase setting not supported on M81 source. Ignored!')
+
+    def get_phase(self, source=1):
+        return 0.0
+
+    def set_amplitude(self, amplitude, source=1, level='amp', unit='Vpp'):
+        """
+        Set AC peak-to-peak amplitude, given as voltage across the
+        load resistance: unit 'Vpp' or 'mVpp' (or 'App'/'uApp' for current)
+        """
+        if level != 'amp':
+            raise ValueError('ERROR: Only level="amp" supported on M81!')
+        slot = self._sg_slot(source)
+        self._sg_read_levels(slot)
+        self._sg_ac_current_pp[slot] = self._sg_to_current(amplitude, unit, slot)
+        self._sg_write_levels(slot)
+        self._debug_print('S' + str(slot) + ' AC current pp = '
+                          + str(self._sg_ac_current_pp[slot]) + ' A')
+
+    def get_amplitude(self, source=1, level='amp', unit='Vpp'):
+        slot = self._sg_slot(source)
+        self._sg_read_levels(slot)
+        return self._sg_from_current(self._sg_ac_current_pp[slot], unit, slot)
+
+    def set_offset(self, offset, source=1, unit='V'):
+        """
+        Set DC offset (TES bias), given as voltage across the load
+        resistance: unit 'V' or 'mV' (or 'A'/'uA' for current)
+        """
+        slot = self._sg_slot(source)
+        self._sg_read_levels(slot)
+        self._sg_offset_current[slot] = self._sg_to_current(offset, unit, slot)
+        self._sg_write_levels(slot)
+        self._debug_print('S' + str(slot) + ' DC current = '
+                          + str(self._sg_offset_current[slot]) + ' A')
+
+    def get_offset(self, source=1, unit='V'):
+        slot = self._sg_slot(source)
+        self._sg_read_levels(slot)
+        return self._sg_from_current(self._sg_offset_current[slot], unit, slot)
+
+    def set_current(self, current, source=1):
+        """ Set DC offset current [A] directly """
+        self.set_offset(current, source=source, unit='A')
+
+    def get_current(self, source=1):
+        """ DC offset current [A] """
+        return self.get_offset(source=source, unit='A')
+
+    def apply_dc(self, offset, source=1):
+        self.set_shape('dc', source=source)
+        self.set_offset(offset, source=source)
+
+    def set_generator_onoff(self, output_onoff, source=1):
+        if isinstance(output_onoff, str):
+            state = output_onoff.lower() == 'on'
+        else:
+            state = bool(output_onoff)
+        slot = self._sg_slot(source)
+        self._inst.get_source_module(slot).set_enable_state(state)
+        self._debug_print('S' + str(slot) + ' output = ' + str(state))
+
+    def get_generator_onoff(self, source=1):
+        """ Return 'on' or 'off' """
+        module = self._inst.get_source_module(self._sg_slot(source))
+        return 'on' if module.get_enable_state() else 'off'
+
+    def set_auto_range(self, auto, source=1):
+        """
+        auto: 'on'/'off' or bool ('off' freezes the present range)
+        """
+        if isinstance(auto, str):
+            auto = auto.lower() == 'on'
+        slot = self._sg_slot(source)
+        module = self._inst.get_source_module(slot)
+        if auto:
+            module.configure_current_range(True)
+        else:
+            module.configure_current_range(False, max_level=module.get_current_range())
+        self._debug_print('S' + str(slot) + ' autorange = ' + str(auto))
+
+    # ------------------------------------------------------------------
     # Functions not available on M81
     # ------------------------------------------------------------------
 
@@ -850,6 +1068,108 @@ class LakeshoreM81():
             raise ValueError('ERROR: source (heater) channel number should be between 1-'
                              + str(len(self._inst.source_modules)) + '!')
         return self._inst.get_source_module(channel_number)
+
+    def _sg_slot(self, source):
+        """
+        Generator source number -> M81 source slot. Initializes slot
+        (current mode, DC coupling, read levels) on first use; other
+        slots are never touched.
+        """
+        self._check_connected()
+        slot = self._sg_source_slot + int(source) - 1
+        if slot < 1 or slot > len(self._inst.source_modules):
+            raise ValueError('ERROR: M81 source slot S' + str(slot) + ' does not exist!')
+        if slot not in self._sg_initialized_slots:
+            self._sg_init_slot(slot)
+            self._sg_initialized_slots.add(slot)
+        return slot
+
+    def _sg_init_slot(self, slot):
+        module = self._inst.get_source_module(slot)
+
+        # check module installed
+        try:
+            model = module.get_model()
+        except XIPInstrumentException:
+            model = ''
+        if not model:
+            raise ValueError('ERROR: No source module installed in M81 slot S'
+                             + str(slot) + '!')
+
+        # current mode (do not change mode of an enabled output)
+        if not str(module.get_source_function()).upper().startswith('CURR'):
+            if module.get_enable_state():
+                print('WARNING: M81 S' + str(slot) + ' is in voltage mode and enabled. '
+                      'Not changing mode!')
+            else:
+                module.set_source_function('CURRent')
+
+        # DC coupling so that the offset (TES bias) is kept with AC shapes
+        try:
+            module.set_automatic_coupling(False)
+            module.use_dc_coupling()
+        except Exception:
+            pass
+
+        if self._verbose:
+            print('INFO: Lakeshore M81 S' + str(slot) + ' (' + model
+                  + ') used as TES bias / signal generator')
+
+    def _sg_read_levels(self, slot):
+        """ Read present DC offset / AC amplitude from instrument """
+        module = self._inst.get_source_module(slot)
+        shape = str(module.get_shape()).strip().upper()
+        amplitude = float(module.get_current_amplitude())
+        if shape == 'DC':
+            self._sg_offset_current[slot] = amplitude
+            self._sg_ac_current_pp.setdefault(slot, 0.0)
+        else:
+            self._sg_offset_current[slot] = float(module.get_current_offset())
+            self._sg_ac_current_pp[slot] = 2.0*amplitude
+
+    def _sg_write_levels(self, slot):
+        """ Write DC offset / AC amplitude according to present shape """
+        module = self._inst.get_source_module(slot)
+        shape = str(module.get_shape()).strip().upper()
+        offset = self._sg_offset_current.get(slot, 0.0)
+        ac_pp = self._sg_ac_current_pp.get(slot, 0.0)
+        if shape == 'DC':
+            module.set_current_amplitude(offset)
+        else:
+            module.set_current_offset(offset)
+            module.set_current_amplitude(ac_pp/2.0)
+
+    def _sg_get_load(self, slot):
+        load = self._sg_load_resistance.get(slot, self._sg_default_load)
+        if load is None:
+            raise ValueError('ERROR: M81 load resistance not set! Use set_load_resistance() '
+                             'or "load_resistance" in setup.ini [lakeshoreM81] section.')
+        return load
+
+    def _sg_to_current(self, value, unit, slot):
+        value = float(value)
+        unit_low = str(unit).lower()
+        if unit_low in ('a', 'app'):
+            return value
+        if unit_low in ('ua', 'uapp'):
+            return value*1e-6
+        if unit_low in ('v', 'vpp'):
+            return value/self._sg_get_load(slot)
+        if unit_low in ('mv', 'mvpp'):
+            return value*1e-3/self._sg_get_load(slot)
+        raise ValueError('ERROR: unit should be V, mV, Vpp, mVpp, A, uA!')
+
+    def _sg_from_current(self, current, unit, slot):
+        unit_low = str(unit).lower()
+        if unit_low in ('a', 'app'):
+            return current
+        if unit_low in ('ua', 'uapp'):
+            return current*1e6
+        if unit_low in ('v', 'vpp'):
+            return current*self._sg_get_load(slot)
+        if unit_low in ('mv', 'mvpp'):
+            return current*self._sg_get_load(slot)*1e3
+        raise ValueError('ERROR: unit should be V, mV, Vpp, mVpp, A, uA!')
 
     @staticmethod
     def _is_voltage_function(function):

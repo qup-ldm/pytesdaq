@@ -106,8 +106,8 @@ class IV_dIdV(Sequencer):
             return True
         
         #True if we have a single DC source for biasing the TES's
-        single_TES_bias_source = (self._instruments_inst._config.get_tes_controller() == 'agilent33500B') \
-                               or(self._instruments_inst._config.get_tes_controller() == 'rigolDG852')
+        single_TES_bias_source = (self._instruments_inst._config.get_tes_controller()
+                                  in ['agilent33500B', 'rigolDG852', 'lakeshoreM81'])
 
         #True if the user has defined biases in currents (rather than voltage)
         bias_in_current = ('bias_in_ua' not in self._measurement_config['iv_didv']) or (self._measurement_config['iv_didv']['bias_in_ua'])

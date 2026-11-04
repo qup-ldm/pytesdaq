@@ -10,6 +10,7 @@ import pytesdaq.utils.remote as remote
 from pytesdaq.instruments.feb  import FEB
 from pytesdaq.instruments.magnicon import Magnicon
 from pytesdaq.instruments.lakeshore import Lakeshore
+from pytesdaq.instruments.lakeshore import LakeshoreM81
 from pytesdaq.instruments.imacrt import MACRT
 from pytesdaq.instruments.keysight import KeysightDSOX1200
 from pytesdaq.instruments.keithley import Keithley2400
@@ -50,6 +51,15 @@ class Control:
         # TES Controller
         self._tes_controller_name = self._config.get_tes_controller()
         self._tes_controller_inst = None
+
+        # Lakeshore M81: [lakeshoreM81] voltage_source
+        #   false (default) -> currents set directly on the current source
+        #   true -> drive as voltage generator (V/R_load conversion)
+        self._m81_voltage_source = self._get_m81_voltage_source()
+
+        # M81 net load used for last TES bias (None = single line),
+        # used to convert readback to per-channel current
+        self._m81_tes_net_load = None
         
         # Signal Generator Controller
         self._signal_generator_name = self._config.get_signal_generator()
@@ -876,6 +886,44 @@ class Control:
                         self._signal_generator_inst.set_load_resistance(resistance)
             
                    
+            # Lakeshore M81 current source: set currents directly
+            # (voltage [mV] converted once with signal gen resistance)
+            if (self._is_m81_current_mode('signal_gen')
+                and (voltage is not None or current is not None
+                     or offset is not None)):
+
+                # several lines in parallel on one source -> net resistance
+                use_net = (use_net_resistance
+                           and self._signal_gen_load is not None)
+                r_conv = self._signal_gen_load if use_net else resistance
+
+                # amplitude [A peak-to-peak]
+                current_pp = None
+                if current is not None:
+                    # per channel current [uA] -> total source current
+                    current_pp = current*1e-6
+                    if use_net:
+                        current_pp = current_pp*resistance/float(r_conv)
+                elif voltage is not None:
+                    # [mV] across line(s) -> [A]
+                    current_pp = voltage*1e-3/float(r_conv)
+
+                if current_pp is not None:
+                    self._signal_generator_inst.set_amplitude(
+                        current_pp, unit='App',
+                        source=signal_gen_num)
+
+                # offset [mV] -> [A]
+                if offset is not None:
+                    self._signal_generator_inst.set_offset(
+                        offset*1e-3/float(r_conv), unit='A',
+                        source=signal_gen_num)
+
+                # done with amplitude/offset
+                voltage = None
+                current = None
+                offset = None
+
             # amplitude
             if voltage is None and current is not None:
 
@@ -2783,7 +2831,31 @@ class Control:
                     param_val = self._tes_controller_inst.get_current()
 
                 # convert to uAmps
-                param_val *= 1e6 
+                param_val *= 1e6
+
+            elif self._tes_controller_name == 'lakeshoreM81':
+
+                # M81 current source: total current split between
+                # bias lines -> I_channel = I_total * R_load / R_channel
+                resistance =  self.get_tes_bias_resistance(
+                    tes_channel=tes_channel,
+                    detector_channel=detector_channel,
+                    adc_id=adc_id,
+                    adc_channel=adc_channel
+                )
+                current = self._tes_controller_inst.get_current()
+
+                if self._is_m81_current_mode('tes'):
+                    # scale only if several lines share the source
+                    if self._m81_tes_net_load is not None:
+                        current = current*self._m81_tes_net_load/float(resistance)
+                else:
+                    load = self._tes_controller_inst.get_load_resistance()
+                    if load is not None:
+                        current = current*load/float(resistance)
+
+                # convert to uAmps
+                param_val = current*1e6
 
             else:
                 print('ERROR: Unknown TES controller! **************')
@@ -3138,7 +3210,48 @@ class Control:
                     self._tes_controller_inst.set_load_resistance(int(resistance))
 
                 self._tes_controller_inst.set_offset(voltage)
-                self._tes_controller_inst.set_generator_onoff('on')                
+                self._tes_controller_inst.set_generator_onoff('on')
+            elif self._tes_controller_name == 'lakeshoreM81':
+                # get TES bias resistor
+                resistance =  float(self.get_tes_bias_resistance(
+                    tes_channel=tes_channel,
+                    detector_channel=detector_channel,
+                    adc_id=adc_id,
+                    adc_channel=adc_channel
+                ))
+
+                use_net = (use_net_resistance
+                           and self._tes_controller_load is not None)
+                load = self._tes_controller_load if use_net else resistance
+
+                # load only used by the M81 class for V<->I conversion
+                # (does not change the output current)
+                self._tes_controller_inst.set_load_resistance(load)
+
+                if self._is_m81_current_mode('tes'):
+
+                    # current source: set current directly [A]
+                    # several lines in parallel on one source -> total
+                    # current such that this channel gets "value":
+                    #   I_total = I_channel * R_channel / R_net
+                    current = value*1e-6
+                    if use_net:
+                        current = current*resistance/float(load)
+                        self._m81_tes_net_load = float(load)
+                    else:
+                        self._m81_tes_net_load = None
+
+                    self._tes_controller_inst.set_current(current)
+
+                else:
+
+                    # voltage generator emulation: equivalent voltage
+                    # across bias resistor, converted to source current
+                    # with load (net) resistance
+                    voltage = resistance*value*1e-6
+                    self._tes_controller_inst.set_offset(voltage, unit='V')
+
+                self._tes_controller_inst.set_generator_onoff('on')
             else:
                 raise ValueError('ERROR: Unknown TES controller!')
 
@@ -3429,14 +3542,27 @@ class Control:
                     verbose=self._verbose,
                     raise_errors=self._raise_errors)
             )
-                    
+
+        # ----------------
+        # Lakeshore M81 (current source)
+        # -> TES controller and/or signal generator
+        #    (single instance shared, one serial port)
+        # ----------------
+        if (self._tes_controller_name == 'lakeshoreM81'
+            or self._signal_generator_name == 'lakeshoreM81'):
+            m81_inst = self._get_lakeshore_m81()
+            if self._tes_controller_name == 'lakeshoreM81':
+                self._tes_controller_inst = m81_inst
 
         # ----------------
         # Signal generator
         # ----------------
 
-        if self._signal_generator_name is not None:
-            
+        if self._signal_generator_name == 'lakeshoreM81':
+            self._signal_generator_inst = self._get_lakeshore_m81()
+
+        elif self._signal_generator_name is not None:
+
             address = self._config.get_device_visa_address(
                 self._signal_generator_name)
             attenuation = self._config.get_device_parameters(
@@ -3541,9 +3667,12 @@ class Control:
             if self._verbose:
                 print('INFO: Connecting ' + controller_name)
             
-            # lakeshore
+            # lakeshore (M81 instance shared with TES controller /
+            # signal generator if also used as such)
             inst = None
-            if controller_name.find('lakeshore')!=-1:
+            if controller_name.lower().find('lakeshorem81')!=-1:
+                inst = self._get_lakeshore_m81(instrument_name=controller_name)
+            elif controller_name.find('lakeshore')!=-1:
                 inst = Lakeshore(instrument_name=controller_name)
             elif controller_name=='macrt':
                 inst = MACRT()
@@ -3559,13 +3688,71 @@ class Control:
             if controller_name.find('lakeshore')!=-1:
                 inst.connect()
             
+    def _get_m81_voltage_source(self):
+        """
+        [lakeshoreM81] voltage_source setting (default False)
+        """
+        params = self._config.get_device_parameters('lakeshoreM81')
+        if not params or 'voltage_source' not in params:
+            return False
+        value = params['voltage_source']
+        if isinstance(value, str):
+            return value.strip().lower() == 'true'
+        return bool(value)
+
+    def _is_m81_current_mode(self, role='tes'):
+        """
+        True if M81 is used for this role ('tes' or 'signal_gen')
+        and voltage_source = false
+        """
+        name = (self._tes_controller_name if role == 'tes'
+                else self._signal_generator_name)
+        return name == 'lakeshoreM81' and not self._m81_voltage_source
+
+    def _get_lakeshore_m81(self, instrument_name='lakeshoreM81'):
+        """
+        Get the (single, shared) Lakeshore M81 instance, connected.
+        Created on first call from setup file section [lakeshoreM81]:
+           com_port = /dev/ttyUSB0  (or ip / tcp_port)
+           baud_rate = 921600
+           source_slot = 1
+        """
+        if getattr(self, '_lakeshore_m81_inst', None) is not None:
+            return self._lakeshore_m81_inst
+
+        params = self._config.get_device_parameters('lakeshoreM81')
+        if params is None:
+            params = dict()
+
+        kwargs = dict()
+        if 'ip' in params:
+            kwargs['ip_address'] = str(params['ip'])
+            kwargs['tcp_port'] = int(params.get('tcp_port', 7777))
+        else:
+            kwargs['com_port'] = str(params.get('com_port', '/dev/ttyUSB0'))
+            kwargs['baud_rate'] = int(params.get('baud_rate', 921600))
+        kwargs['source_slot'] = int(params.get('source_slot', 1))
+        if 'load_resistance' in params:
+            kwargs['load_resistance'] = float(params['load_resistance'])
+
+        inst = LakeshoreM81(instrument_name=instrument_name,
+                            verbose=self._verbose,
+                            raise_errors=self._raise_errors,
+                            **kwargs)
+        inst.connect()
+        self._lakeshore_m81_inst = inst
+        return inst
+
     def _disconnect_instruments(self):
         """
         Disconnect instruments
         """
 
         if self._signal_generator_inst is not None:
-            self._signal_generator_inst.disconnect()
+            # same instance as TES controller (e.g. lakeshoreM81)
+            # -> disconnected below
+            if self._signal_generator_inst is not self._tes_controller_inst:
+                self._signal_generator_inst.disconnect()
             self._signal_generator_inst = None
 
         if self._laser_signal_generator_inst is not None:
@@ -3585,6 +3772,11 @@ class Control:
             for name, inst in self._temperature_controller_insts.items():
                 inst.disconnect()
             self._temperature_controller_insts = None
+
+        # shared Lakeshore M81 (disconnect is a no-op if already done)
+        if getattr(self, '_lakeshore_m81_inst', None) is not None:
+            self._lakeshore_m81_inst.disconnect()
+            self._lakeshore_m81_inst = None
 
             
     def _get_parameter_from_config(self, parameter_name,
