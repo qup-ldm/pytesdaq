@@ -556,7 +556,10 @@ class DAQControl:
 
         if single_signal_gen_source:
             self._instruments_inst.calc_sg_load(didv_channels)
-        
+
+        # external trigger -> enable signal generator sync output
+        self._enable_sync_if_exttrig(self._adc_config['didv'], 'didv')
+
         # ------------------
         # Loop tes bias
         # ------------------
@@ -760,6 +763,10 @@ class DAQControl:
         if not bias_in_current:
             tes_bias_unit = 'mV'
 
+        # external trigger -> enable signal generator sync output
+        # (IV default is randoms, not externally triggered)
+        self._enable_sync_if_exttrig(self._adc_config['iv'], 'iv')
+
         # ------------------
         # Loop tes bias
         # ------------------
@@ -938,15 +945,34 @@ class DAQControl:
         for adc_id in self._channels_dict['adc_ids']:
             adc_setup_default[adc_id] = self._config.get_adc_setup(adc_id)
             
+        # trigger type: 1 = continuous, 2 = external trigger
+        calib_trigger_type = 1
+        if self._calibration_config['trigger_mode'] == 'exttrig':
+            calib_trigger_type = 2
+
+        if self._verbose:
+            print(f'INFO: Calibration trigger mode = '
+                  f'{self._calibration_config["trigger_mode"]}')
+
         adc_config =self._get_adc_configuration(
             'calibration',
             adc_setup_default,
             ttl_adc_channel=ttl_adc_channel,
-            ttl_adc_id=ttl_adc_id
+            ttl_adc_id=ttl_adc_id,
+            trigger_type=calib_trigger_type
+        )
+
+        # external trigger -> enable laser control channel
+        # sync output (rear panel), used to trigger DAQ
+        self._enable_sync_if_exttrig(
+            adc_config,
+            'calibration',
+            laser=True,
+            signal_gen_num=control_channel
         )
 
         daq_inst.set_adc_config_from_dict(adc_config)
-            
+
         # set detector config
         detector_config = self._read_detector_settings(
             adc_config,
@@ -998,8 +1024,18 @@ class DAQControl:
         if add_calib_noise:
 
             print(f'INFO: Taking Laser Calibration Noise\n')
-                  
-            
+
+            # noise always continuous (laser/sync may be off,
+            # so no external triggers expected)
+            if calib_trigger_type != 1:
+                adc_config =self._get_adc_configuration(
+                    'calibration',
+                    adc_setup_default,
+                    ttl_adc_channel=ttl_adc_channel,
+                    ttl_adc_id=ttl_adc_id,
+                    trigger_type=1
+                )
+
             # configurating ADC
             daq_inst.set_adc_config_from_dict(adc_config)
             
@@ -1030,6 +1066,47 @@ class DAQControl:
             return
         
                   
+
+    def _enable_sync_if_exttrig(self, adc_config, acquisition_type,
+                                laser=False, signal_gen_num=1):
+        """
+        If ADC config is externally triggered (trigger_type=2),
+        enable signal generator sync output (rear panel), which
+        should be connected to the DAQ trigger input.
+
+        Sync polarity from daq.ini "sync_polarity" parameter
+        of the acquisition section (default "positive").
+        Sync level/width are fixed by hardware (TTL).
+        """
+
+        is_exttrig = False
+        for adc_dict in adc_config.values():
+            if int(adc_dict.get('trigger_type', 1)) == 2:
+                is_exttrig = True
+                break
+
+        if not is_exttrig:
+            return
+
+        polarity = 'positive'
+        daq_config = self._daq_config.get(acquisition_type)
+        if daq_config and 'sync_polarity' in daq_config:
+            polarity = str(daq_config['sync_polarity']).strip().lower()
+
+        if self._verbose:
+            print(f'INFO: {acquisition_type} externally triggered: '
+                  f'enabling signal generator sync output '
+                  f'(polarity = {polarity})')
+
+        if laser:
+            self._instruments_inst.set_laser_signal_gen_sync(
+                'on', signal_gen_num=signal_gen_num,
+                polarity=polarity)
+        else:
+            self._instruments_inst.set_signal_gen_sync(
+                'on', signal_gen_num=signal_gen_num,
+                polarity=polarity)
+
 
     def _create_output_path(self):
         """
@@ -1164,9 +1241,14 @@ class DAQControl:
                                acquisition_type,
                                adc_config_default,
                                ttl_adc_channel=None,
-                               ttl_adc_id=None):
+                               ttl_adc_id=None,
+                               trigger_type=None):
         """
         Get ADC setup from configuration files
+
+        trigger_type : int, optional
+            override default trigger type of the
+            acquisition type (1=continuous, 2=external trigger)
         """
 
         # initialize based on default
@@ -1289,12 +1371,14 @@ class DAQControl:
                 int(adc_channels[iadc])
             )
                 
+        # trigger type (default from acquisition type)
+        if trigger_type is None:
+            trigger_type = trigger_types[acquisition_type]
+
         # Add parameters
         for adc_id in adc_config.keys():
             adc_config[adc_id]['nb_samples'] = nb_samples
-            adc_config[adc_id]['trigger_type'] = int(
-                trigger_types[acquisition_type]
-            )
+            adc_config[adc_id]['trigger_type'] = int(trigger_type)
             adc_channels_dict[adc_id]['channel_list'].sort()
             adc_config[adc_id]['channel_list'] = (
                 adc_channels_dict[adc_id]['channel_list']
@@ -1809,7 +1893,8 @@ class DAQControl:
         output_config['ttl_adc_id'] = None
         output_config['add_calib_noise']= False
         output_config['calib_noise_runtime'] = 60
-            
+        output_config['trigger_mode'] = 'continuous'
+
         if self._daq_config['calibration'] is None:
             return output_config
                 
@@ -1916,7 +2001,16 @@ class DAQControl:
             output_config['calib_noise_runtime'] = (
                 arg_utils.convert_to_seconds(noise_run_time)
             )
-                
+
+        # trigger mode: 'continuous' or 'exttrig'
+        if 'trigger_mode' in config:
+            trigger_mode = str(config['trigger_mode']).strip().lower()
+            if trigger_mode not in ['continuous', 'exttrig']:
+                raise ValueError(
+                    f'ERROR: calibration "trigger_mode" should be '
+                    f'"continuous" or "exttrig", not "{trigger_mode}"!')
+            output_config['trigger_mode'] = trigger_mode
+
                 
         return  output_config 
             

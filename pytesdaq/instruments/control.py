@@ -1029,7 +1029,69 @@ class Control:
             on_off_flag,
             source=signal_gen_num
         )
-            
+
+
+    def set_signal_gen_sync(self, on_off_flag, signal_gen_num=1,
+                            polarity=None):
+        """
+        Set signal generator (TES/dIdV) sync output on/off
+        (e.g. to externally trigger the DAQ)
+        """
+        self._set_sync_output(self._signal_generator_inst,
+                              self._signal_generator_name,
+                              on_off_flag,
+                              signal_gen_num=signal_gen_num,
+                              polarity=polarity)
+
+
+    def set_laser_signal_gen_sync(self, on_off_flag, signal_gen_num=1,
+                                  polarity=None):
+        """
+        Set laser signal generator sync output on/off
+        (e.g. to externally trigger the DAQ)
+        """
+        self._set_sync_output(self._laser_signal_generator_inst,
+                              self._laser_signal_generator_name,
+                              on_off_flag,
+                              signal_gen_num=signal_gen_num,
+                              polarity=polarity)
+
+
+    def _set_sync_output(self, inst, inst_name, on_off_flag,
+                         signal_gen_num=1, polarity=None):
+        """
+        Set sync output of a signal generator instance, if
+        available (Rigol DG800/DG800 Pro, Lakeshore M81)
+        """
+
+        on_off_flag = on_off_flag.lower()
+        if on_off_flag not in ['on','off']:
+            raise ValueError('ERROR in set_sync_output: '
+                             'Argument is "on" or "off"')
+
+        if self._dummy_mode:
+            print(f'INFO: Setting {inst_name} sync output '
+                  f'(channel {signal_gen_num}) {on_off_flag}')
+            return
+
+        if inst is None:
+            print('WARNING: No signal generator controller available. '
+                  'Unable to change sync output!')
+            return
+
+        if not hasattr(inst, 'set_sync_output'):
+            print(f'WARNING: Sync output control not available for '
+                  f'{inst_name}. Make sure it is enabled manually!')
+            return
+
+        inst.set_sync_output(on_off_flag,
+                             source=int(signal_gen_num),
+                             polarity=polarity)
+
+        if self._verbose:
+            print(f'INFO: {inst_name} sync output (channel '
+                  f'{signal_gen_num}) {on_off_flag}')
+
     
     def set_laser_signal_gen_params(self,
                                     signal_gen_num=1,
