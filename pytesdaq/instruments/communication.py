@@ -138,8 +138,44 @@ class InstrumentComm:
             data = self._inst.recv(1024)
             # close
             self.close()
-        else:
-            data = self._inst.query(command)
+        else:       # MODIFIQUE DESDE ACAAAA
+
+            last_err = None
+
+            for attempt in range(5):
+
+                try:
+                    data = self._inst.query(command)
+                    break
+
+                except visa.VisaIOError as e:
+
+                    last_err = e
+
+                    # VISA timeout
+                    if e.error_code == -1073807339:
+
+                        print(
+                            f'WARNING: VISA timeout during query "{command}" '
+                            f'(attempt {attempt+1}/5)'
+                        )
+
+                        try:
+                            self._inst.clear()
+                        except Exception:
+                            pass
+
+                        time.sleep(0.5)
+
+                        continue
+
+                    # non-timeout VISA error
+                    raise
+
+            else:
+                raise last_err      # Hasta ACAAA
+        #else:
+            #data = self._inst.query(command)
 
         
         # decode

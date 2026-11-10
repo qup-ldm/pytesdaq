@@ -106,7 +106,8 @@ class IV_dIdV(Sequencer):
             return True
         
         #True if we have a single DC source for biasing the TES's
-        single_TES_bias_source = self._instruments_inst._config.get_tes_controller() == 'agilent33500B'
+        single_TES_bias_source = (self._instruments_inst._config.get_tes_controller()
+                                  in ['agilent33500B', 'rigolDG852', 'lakeshoreM81'])
 
         #True if the user has defined biases in currents (rather than voltage)
         bias_in_current = ('bias_in_ua' not in self._measurement_config['iv_didv']) or (self._measurement_config['iv_didv']['bias_in_ua'])
@@ -202,16 +203,28 @@ class IV_dIdV(Sequencer):
             print('INFO: Tune signal generator range base on max TES bias then '
                   'set auto range off!')
             
+            # Rigol DG852 only: DC bias is emulated with a 10MHz,
+            # minimum Vpp square wave whose offset is the DC level.
+            # Other supplies: plain DC output set via the offset
+            # (a square wave is only used if dIdV is enabled).
+            is_rigol = (self._instruments_inst.signal_generator_name
+                        == 'rigolDG852')
+            use_square_wave = is_rigol or self._enable_didv
+
             for channel in self._detector_channels:
 
-                # set autorange on  
+                # set autorange on
                 signal_gen_controller.set_auto_range('on')
 
-                # turn on output
+                # turn on output (sets shape "square")
                 self._instruments_inst.set_signal_gen_onoff(
                     'on',
                     detector_channel=channel)
-                
+
+                # non-Rigol, IV only: true DC output
+                if not use_square_wave:
+                    signal_gen_controller.set_shape('dc')
+
                 # set TES bias
                 self._instruments_inst.set_tes_bias(
                     np.max(sweep_config['tes_bias_vect']),
@@ -220,29 +233,35 @@ class IV_dIdV(Sequencer):
                     use_net_resistance=single_TES_bias_source
                 )
 
-                signal_gen_voltage = 2
-                if 'signal_gen_voltage' in didv_config:
-                    signal_gen_voltage = didv_config['signal_gen_voltage']
-
-                signal_gen_frequency = 80
-                if 'signal_gen_frequency' in didv_config:
-                    signal_gen_frequency = didv_config['signal_gen_frequency']
-             
                 signal_gen_offset = signal_gen_controller.get_offset()*1000
                 print(f"INFO: max func gen offset is {signal_gen_offset} mV")
-                    
-                self._instruments_inst.set_signal_gen_params(
-                    detector_channel=channel,
-                    source='tes', 
-                    voltage=signal_gen_voltage,
-                    voltage_unit='mV',
-                    frequency=signal_gen_frequency,
-                    frequency_unit='Hz',
-                    shape='square',
-                    use_net_resistance = single_signal_gen_source
-                )
 
-                print("INFO: Set signal gen to square wave")
+                if use_square_wave:
+
+                    signal_gen_voltage = 2
+                    if 'signal_gen_voltage' in didv_config:
+                        signal_gen_voltage = didv_config['signal_gen_voltage']
+
+                    signal_gen_frequency = None
+                    if is_rigol:
+                        signal_gen_frequency = 10000000
+                    if 'signal_gen_frequency' in didv_config:
+                        signal_gen_frequency = didv_config['signal_gen_frequency']
+
+                    self._instruments_inst.set_signal_gen_params(
+                        detector_channel=channel,
+                        source='tes',
+                        voltage=signal_gen_voltage,
+                        voltage_unit='mV',
+                        frequency=signal_gen_frequency,
+                        frequency_unit='Hz',
+                        shape='square',
+                        use_net_resistance = single_signal_gen_source
+                    )
+
+                    print("INFO: Set signal gen to square wave")
+                else:
+                    print("INFO: Set signal gen to DC output")
             
                 # set auto range off
                 signal_gen_controller.set_auto_range('off')
@@ -582,6 +601,8 @@ class IV_dIdV(Sequencer):
                                         fs=sample_rate)
                         
                         traces = traces[cut]
+                        #print out trace mean to monitor SQUID jump
+                        print(f"INFO: Baseline mean is {np.mean(traces)} V")
                             
                         # convert to amps
                         norm = (
@@ -608,44 +629,43 @@ class IV_dIdV(Sequencer):
                         std_median = np.median(traces_std, axis=0)
                         stds.append([std_median])
                 
-                        # save
-                        bias_array = [[-bias*1e-6]]*nb_channels
-                        bias_err_array = [[0]]*nb_channels
-                            
-                        if online_iv_offset is None:
-                                online_iv_offset = np.array(offsets)
-                        else:
-                            online_iv_offset = np.append(
-                                online_iv_offset, offsets, axis=1
-                            )
+                    # save
+                    bias_array = [[-bias*1e-6]]*nb_channels
+                    bias_err_array = [[0]]*nb_channels
+                        
+                    if online_iv_offset is None:
+                            online_iv_offset = np.array(offsets)
+                    else:
+                        online_iv_offset = np.append(
+                            online_iv_offset, offsets, axis=1
+                        )
+                    if online_iv_offset_err is None:
+                        online_iv_offset_err = np.array(offsets_err)
+                    else:
+                        online_iv_offset_err = np.append(
+                            online_iv_offset_err, offsets_err, axis=1
+                        )
 
-                        if online_iv_offset_err is None:
-                            online_iv_offset_err = np.array(offsets_err)
-                        else:
-                            online_iv_offset_err = np.append(
-                                online_iv_offset_err, offsets_err, axis=1
-                            )
-
-                        if online_iv_std is None:
-                            online_iv_std = np.array(stds)
-                        else:
-                            online_iv_std = np.append(
-                                online_iv_std, stds, axis=1
-                            )  
-                            
-                        if online_iv_tes_bias is None:
-                            online_iv_tes_bias = np.array(bias_array)
-                        else:
-                            online_iv_tes_bias = np.append(
-                                online_iv_tes_bias,  bias_array, axis=1
-                            )  
-
-                        if online_iv_tes_bias_err is None:
-                            online_iv_tes_bias_err = np.array(bias_err_array)
-                        else:
-                            online_iv_tes_bias_err = np.append(
-                                online_iv_tes_bias_err,  bias_err_array, axis=1
+                    if online_iv_std is None:
+                        online_iv_std = np.array(stds)
+                    else:
+                        online_iv_std = np.append(
+                            online_iv_std, stds, axis=1
                         )  
+                        
+                    if online_iv_tes_bias is None:
+                        online_iv_tes_bias = np.array(bias_array)
+                    else:
+                        online_iv_tes_bias = np.append(
+                            online_iv_tes_bias,  bias_array, axis=1
+                        )  
+
+                    if online_iv_tes_bias_err is None:
+                        online_iv_tes_bias_err = np.array(bias_err_array)
+                    else:
+                        online_iv_tes_bias_err = np.append(
+                            online_iv_tes_bias_err,  bias_err_array, axis=1
+                    )  
 
                     # analyze
                     if istep>=3:
@@ -874,16 +894,17 @@ class IV_dIdV(Sequencer):
                                 adc_id=adc_name,
                                 adc_channel_list=adc_channel_dict[adc_name]
                             )
-                                                              
+
                         self._daq.set_detector_config(det_config)
 
 
                         # start run
                         if self._enable_tes_bias_sweep:
-                            run_comment = ('dIdV: ' + ' TES bias = '
-                                           + str(bias) + 'uA')
-                            print('INFO: Starting IV data taking with TES bias = '
-                                  + str(bias) + 'uA!')
+                            run_comment = ('dIdV chan ' + str(channel)
+                                           + ': TES bias = ' + str(bias) + ' ' + tes_bias_unit)
+                            print('INFO: Starting dIdV data taking for channel '
+                                  + str(channel)
+                                  + ' with TES bias = ' + str(bias) + ' ' + tes_bias_unit +'!')
                         else:
                             run_comment = 'dIdV (bias sweep disabled)'
                             print('INFO: Starting dIdV data taking (bias sweep disabled)!')

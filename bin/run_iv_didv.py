@@ -162,6 +162,7 @@ if __name__ == "__main__":
                             sweep_channels=channels,
                             saved_channels=saved_channels,
                             sequencer_file=sequencer_file, setup_file=setup_file,
-                            sequencer_pickle_file=pickle_file)
+                            sequencer_pickle_file=pickle_file,
+                            verbose=False)
         sequencer.run()
 

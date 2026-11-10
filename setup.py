@@ -55,6 +55,7 @@ setup(name='pytesdaq',
             'seaborn',
             'astropy',
             'lmfit',
-            'tables'
+            'tables',
+            'pyvisa-py'
       ],
 )

@@ -19,7 +19,7 @@ class PolarisTask:
         self._polaris_exe = 'polaris'
         self._config_file_name = '.nidaq.cfg'
         self._log_file = str()
-        self._verbose = True
+        self._verbose = False
         self._quiet = False
               
         # data taking config
@@ -223,7 +223,7 @@ class PolarisTask:
                 
         # build system commend
         
-        polaris_cmd = self._polaris_exe + ' --cfg ' + self._config_file_name + ' --time ' + str(run_time)
+        polaris_cmd = self._polaris_exe + ' --cfg ' + self._config_file_name + ' --time ' + str(run_time) + ' --no-input '
         if self._verbose:
             polaris_cmd = polaris_cmd + ' --verbose'
         if self._quiet:
