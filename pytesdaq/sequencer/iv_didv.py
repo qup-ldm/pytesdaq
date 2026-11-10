@@ -727,6 +727,10 @@ class IV_dIdV(Sequencer):
                     
                     # setup ADC
                     self._daq.set_adc_config_from_dict(iv_config['adc_setup'])
+
+                    # external trigger -> enable SG sync output
+                    # (IV default is continuous)
+                    self._enable_sync_if_exttrig(iv_config)
                     
                     # get/set detector config metadata
                     det_config = dict()
@@ -778,6 +782,9 @@ class IV_dIdV(Sequencer):
 
                     # ADC setup
                     self._daq.set_adc_config_from_dict(didv_config['adc_setup'])
+
+                    # external trigger -> enable SG sync output
+                    self._enable_sync_if_exttrig(didv_config)
                                                                               
                     # set detector
                     for channel in self._detector_channels:
@@ -1128,6 +1135,35 @@ class IV_dIdV(Sequencer):
                     print('ERROR taking data! Stopping sequencer')
                     return False
                                 
+
+    def _enable_sync_if_exttrig(self, config_dict, signal_gen_num=1):
+        """
+        If measurement ADC setup is externally triggered
+        (trigger_type=2), enable signal generator sync output
+        (rear panel), which should be connected to the DAQ
+        trigger input. Polarity from "sync_polarity" in
+        measurement config (default "positive"). Sync
+        level/width are fixed by hardware (TTL).
+        """
+
+        adc_setup = config_dict.get('adc_setup', dict())
+
+        is_exttrig = False
+        for adc_dict in adc_setup.values():
+            if int(adc_dict.get('trigger_type', 1)) == 2:
+                is_exttrig = True
+                break
+
+        if not is_exttrig:
+            return
+
+        polarity = str(config_dict.get('sync_polarity',
+                                       'positive')).strip().lower()
+
+        self._instruments_inst.set_signal_gen_sync(
+            'on', signal_gen_num=signal_gen_num,
+            polarity=polarity)
+
 
     def _configure(self):
         """

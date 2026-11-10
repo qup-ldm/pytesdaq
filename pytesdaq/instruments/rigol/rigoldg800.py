@@ -592,7 +592,74 @@ class RigolDG800(InstrumentComm):
         result = result.lower()
         return result
 
-    
+
+    def set_sync_output(self, output_onoff, source=1, polarity=None):
+        """
+        Enable/disable the sync signal of a channel, output on
+        the rear-panel [CH<source>/Sync/Ext Mod/Trig/FSK] connector
+        (e.g. to externally trigger the DAQ)
+
+        Parameters
+        ----------
+        output_onoff: string or int
+           "on"=1 or "off"=0
+
+        source: integer
+           signal generator output channel
+
+        polarity: string (optional)
+           "positive" or "negative" (unchanged if None)
+
+        """
+
+        # check input
+        if isinstance(output_onoff, (int, bool)):
+            output_onoff = 'on' if output_onoff else 'off'
+
+        output_onoff = output_onoff.lower()
+
+        if output_onoff != 'on' and output_onoff != 'off':
+            raise ValueError('ERROR: Sync output argument should be '
+                             '"on" or "off"')
+
+        # polarity
+        if polarity is not None:
+            polarity = polarity.lower()
+            if polarity in ['positive', 'pos', 'normal']:
+                polarity = 'POS'
+            elif polarity in ['negative', 'neg', 'inverted']:
+                polarity = 'NEG'
+            else:
+                raise ValueError('ERROR: Sync polarity should be '
+                                 '"positive" or "negative"')
+            self.write(f':OUTP{source}:SYNC:POL {polarity}')
+
+        # set device
+        command = f':OUTP{source}:SYNC {output_onoff.upper()}'
+        self.write(command)
+
+
+    def get_sync_output(self, source=1):
+        """
+        Is sync output on/off?
+
+        Parameters
+        ----------
+        source: integer
+           signal generator output channel
+
+        Returns
+        -------
+        string "on" or "off"
+
+        """
+
+        result = str(self.query(f':OUTP{source}:SYNC?')).strip().upper()
+        if result in ['ON', '1']:
+            return 'on'
+        return 'off'
+
+
     def align_phase(self, source=2, reference_source=1):
         """
         Align phase between channels

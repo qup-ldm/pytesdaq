@@ -1006,6 +1006,49 @@ class LakeshoreM81():
         module = self._inst.get_source_module(self._sg_slot(source))
         return 'on' if module.get_enable_state() else 'off'
 
+    def set_sync_output(self, output_onoff, source=1, polarity=None):
+        """
+        Enable/disable the rear-panel "Reference Out" connector
+        (TTL square wave at the source frequency), driven by the
+        source slot of generator "source" (e.g. to externally
+        trigger the DAQ).
+
+        output_onoff: 'on'/'off', bool or int
+        polarity: not programmable on M81 (ignored, warning if
+                  'negative')
+        """
+        if isinstance(output_onoff, str):
+            output_onoff = output_onoff.strip().lower()
+            if output_onoff not in ('on', 'off'):
+                raise ValueError("ERROR: Sync output should be 'on' or 'off'")
+            state = output_onoff == 'on'
+        else:
+            state = bool(output_onoff)
+
+        if (polarity is not None
+                and str(polarity).strip().lower() in ('negative', 'neg', 'inverted')
+                and self._verbose):
+            print('WARNING: M81 reference output polarity is not '
+                  'programmable. Ignored!')
+
+        slot = self._sg_slot(source)
+        if state:
+            self._inst.configure_ref_out('S' + str(slot), ref_out_state=True)
+        else:
+            self._inst.set_ref_out_state(False)
+        self._debug_print('Reference out (S' + str(slot) + ') = ' + str(state))
+
+    def get_sync_output(self, source=1):
+        """
+        Return 'on' if the reference output is enabled AND driven by
+        the source slot of generator "source", 'off' otherwise
+        """
+        slot = self._sg_slot(source)
+        if not self._inst.get_ref_out_state():
+            return 'off'
+        ref_source = str(self._inst.get_ref_out_source()).strip().upper()
+        return 'on' if ref_source == 'S' + str(slot) else 'off'
+
     def set_auto_range(self, auto, source=1):
         """
         auto: 'on'/'off' or bool ('off' freezes the present range)

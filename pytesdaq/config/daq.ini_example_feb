@@ -196,7 +196,22 @@ ttl_adc_id = adc1
 # ---------
 # DAQ setup
 # ---------
-# FIXME: only continuous data for now (hard coded)
+# trigger mode:
+#   continuous: stream continuously (default)
+#   exttrig: one trace per external trigger on DAQ input
+#            ("trigger_channel" in setup.ini, e.g. pfi0)
+#            -> connect laser signal generator SYNC out
+#               (rear panel, control_channel), enabled
+#               automatically (Rigol DG800 / M81)
+#            -> trace_length must be < 1/control_frequency
+# calibration noise (add_calib_noise) always continuous
+#
+# SYNC polarity (exttrig only): positive or negative
+#   SYNC level and width are fixed by the hardware (TTL):
+#   ttl_* settings above apply to "ttl_channel" only, not SYNC
+sync_polarity = positive
+trigger_mode = continuous
+
 trace_length = 10s
 
 # sample rate

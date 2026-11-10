@@ -339,6 +339,49 @@ class RigolDG800Pro(InstrumentComm):
         return int(self.query(f'OUTP{source}?')) == 1
 
     # ------------------------------------------------------------------
+    # Sync output (rear-panel [CH<n>/Sync/Ext Mod/Trig/FSK] connector)
+    # ------------------------------------------------------------------
+    def set_sync_output(self, output_onoff, source=1, polarity=None):
+        """
+        Enable/disable the sync signal of a channel, output on
+        the rear-panel [CH<source>/Sync/Ext Mod/Trig/FSK] connector
+        (e.g. to externally trigger the DAQ).
+
+        Parameters
+        ----------
+        output_onoff : str or int
+            'on', 'off', 1, 0
+        source : int
+            Channel (1 or 2)
+        polarity : str, optional
+            'positive' or 'negative' (unchanged if None)
+        """
+        if isinstance(output_onoff, (int, bool)):
+            state = 'ON' if output_onoff else 'OFF'
+        else:
+            state = output_onoff.strip().upper()
+            if state not in ('ON', 'OFF'):
+                raise ValueError("Sync output should be 'on' or 'off'")
+
+        if polarity is not None:
+            polarity = polarity.strip().upper()
+            if polarity in ('POSITIVE', 'POS', 'NORMAL'):
+                polarity = 'POS'
+            elif polarity in ('NEGATIVE', 'NEG', 'INVERTED'):
+                polarity = 'NEG'
+            else:
+                raise ValueError("Sync polarity should be "
+                                 "'positive' or 'negative'")
+            self.write(f':OUTP{source}:SYNC:POL {polarity}')
+
+        self.write(f':OUTP{source}:SYNC {state}')
+
+    def get_sync_output(self, source=1):
+        """Return True if sync output of channel is enabled."""
+        result = str(self.query(f':OUTP{source}:SYNC?')).strip().upper()
+        return result in ('ON', '1')
+
+    # ------------------------------------------------------------------
     # Load resistance
     # ------------------------------------------------------------------
     def set_load_resistance(self, load, source=1):
