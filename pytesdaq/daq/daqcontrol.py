@@ -549,6 +549,10 @@ class DAQControl:
         if not bias_in_current:
             tes_bias_unit = 'mV'
 
+        # TES bias ramp (soft transition between bias points)
+        ramp_step = didv_config['tes_bias_ramp_step']
+        ramp_step_time = didv_config['tes_bias_ramp_step_time']
+
         # True if we're applying the signal gen to one channel at a time.
         # To my knowledge this is only true if we have a feb that's capable
         # of restricting which channels see the signal
@@ -564,19 +568,27 @@ class DAQControl:
         # Loop tes bias
         # ------------------
         step_num = 0
-        for tes_bias in tes_bias_list:
+        for ibias, tes_bias in enumerate(tes_bias_list):
 
             # modify TES bias
             if modify_tes:
-                
+
+                # ramp from present bias if enabled, except the first
+                # point which is set directly (ramping from an
+                # arbitrary initial bias would take too long)
+                point_ramp_step = ramp_step if ibias > 0 else None
+
                 for chan in didv_channels:
 
                     tes_bias_input = tes_bias
                     if tes_bias == 'current':
                         tes_bias_input = self._current_tes_bias[chan]
 
-                    self._instruments_inst.set_tes_bias(
+                    # set bias
+                    self._instruments_inst.ramp_tes_bias(
                         tes_bias_input, unit=tes_bias_unit,
+                        ramp_step=point_ramp_step,
+                        ramp_step_time=ramp_step_time,
                         detector_channel=chan,
                         use_net_resistance=single_TES_bias_source
                     )
@@ -690,11 +702,13 @@ class DAQControl:
                     detector_channel=chan
                 )
 
-            # set TES
+            # set TES back (ramp from present bias if enabled)
             if modify_tes:
                 tes_bias_input = self._current_tes_bias[chan]
-                self._instruments_inst.set_tes_bias(
+                self._instruments_inst.ramp_tes_bias(
                     tes_bias_input, unit=tes_bias_unit,
+                    ramp_step=ramp_step,
+                    ramp_step_time=ramp_step_time,
                     detector_channel=chan,
                     use_net_resistance=single_TES_bias_source
                 )
@@ -763,6 +777,10 @@ class DAQControl:
         if not bias_in_current:
             tes_bias_unit = 'mV'
 
+        # TES bias ramp (soft transition between bias points)
+        ramp_step = iv_config['tes_bias_ramp_step']
+        ramp_step_time = iv_config['tes_bias_ramp_step_time']
+
         # external trigger -> enable signal generator sync output
         # (IV default is randoms, not externally triggered)
         self._enable_sync_if_exttrig(self._adc_config['iv'], 'iv')
@@ -771,7 +789,12 @@ class DAQControl:
         # Loop tes bias
         # ------------------
         step_num = 0
-        for tes_bias in tes_bias_list:
+        for ibias, tes_bias in enumerate(tes_bias_list):
+
+            # ramp from present bias if enabled, except the first
+            # point which is set directly (ramping from an arbitrary
+            # initial bias would take too long)
+            point_ramp_step = ramp_step if ibias > 0 else None
 
             for chan in  iv_channels:
 
@@ -780,8 +803,11 @@ class DAQControl:
                 if tes_bias == 'current':
                     tes_bias_input = self._current_tes_bias[chan]
 
-                self._instruments_inst.set_tes_bias(
+                # set bias
+                self._instruments_inst.ramp_tes_bias(
                     tes_bias_input, unit=tes_bias_unit,
+                    ramp_step=point_ramp_step,
+                    ramp_step_time=ramp_step_time,
                     detector_channel=chan,
                     use_net_resistance=single_TES_bias_source
                 )
@@ -827,11 +853,14 @@ class DAQControl:
 
 
         for chan in  iv_channels:
-            
+
             tes_bias_input = self._current_tes_bias[chan]
 
-            self._instruments_inst.set_tes_bias(
+            # set TES back (ramp from present bias if enabled)
+            self._instruments_inst.ramp_tes_bias(
                 tes_bias_input, unit=tes_bias_unit,
+                ramp_step=ramp_step,
+                ramp_step_time=ramp_step_time,
                 detector_channel=chan,
                 use_net_resistance=single_TES_bias_source
             )
@@ -1496,6 +1525,15 @@ class DAQControl:
                     self._daq_config['didv']['relock_all_steps']
                 )
 
+        # TES bias ramp (soft transition between bias points)
+        for measurement in ['iv', 'didv']:
+            ramp_step, ramp_step_time = (
+                arg_utils.extract_tes_bias_ramp_config(
+                    self._daq_config[measurement],
+                    config_name=measurement)
+            )
+            config[measurement]['tes_bias_ramp_step'] = ramp_step
+            config[measurement]['tes_bias_ramp_step_time'] = ramp_step_time
 
         return config
                 
@@ -1930,9 +1968,10 @@ class DAQControl:
             )   
             
         if ('control_pulse_width' in config
-            and config['control_pulse_width'] != 'None'):
-            output_config['control_pulse_width'] = (
-                config['control_pulse_width']
+            and config['control_pulse_width'].split('#')[0].strip() != 'None'):
+            # strip inline comment (RawConfigParser keeps it)
+            output_config['control_pulse_width'] = float(
+                config['control_pulse_width'].split('#')[0].strip()
             )
                     
         if ('control_frequency' in config
@@ -1973,9 +2012,10 @@ class DAQControl:
             )   
 
         if ('ttl_pulse_width' in config
-            and config['ttl_pulse_width'] != 'None'):
-            output_config['ttl_pulse_width'] = (
-                config['ttl_pulse_width']
+            and config['ttl_pulse_width'].split('#')[0].strip() != 'None'):
+            # strip inline comment (RawConfigParser keeps it)
+            output_config['ttl_pulse_width'] = float(
+                config['ttl_pulse_width'].split('#')[0].strip()
             )
 
         if ('ttl_adc_channel' in config

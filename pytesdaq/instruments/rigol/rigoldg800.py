@@ -417,7 +417,8 @@ class RigolDG800(InstrumentComm):
         """
 
         # set width
-        command = f':SOUR{source}:PULS:WIDT {width}'
+        width = float(width)
+        command = f':SOUR{source}:PULS:WIDT {width:.10E}'
         self.write(command)
 
 

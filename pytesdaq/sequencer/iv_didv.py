@@ -40,6 +40,11 @@ class IV_dIdV(Sequencer):
         self._do_zap_tes = do_zap
         self._do_relock = do_relock
         self._do_zero_offset = do_zero
+
+        # TES bias ramp (soft transition between bias points)
+        # set in _configure() from "iv_didv" configuration
+        self._tes_bias_ramp_step = None
+        self._tes_bias_ramp_step_time = 0.1
                
         measurement_list = list()
         if self._enable_iv:
@@ -152,6 +157,13 @@ class IV_dIdV(Sequencer):
         sweep_config = self._measurement_config['iv_didv']
         iv_config =  dict()
         didv_config = dict()
+
+        # TES bias ramp (soft transition between bias points)
+        if self._tes_bias_ramp_step is not None:
+            print(f'INFO: TES bias ramp enabled: max '
+                  f'{self._tes_bias_ramp_step:g} {tes_bias_unit} per step, '
+                  f'{self._tes_bias_ramp_step_time:g} s between steps '
+                  f'(first bias point set directly)')
         
         if self._enable_iv:
             iv_config =  self._measurement_config['iv']
@@ -225,7 +237,7 @@ class IV_dIdV(Sequencer):
                 if not use_square_wave:
                     signal_gen_controller.set_shape('dc')
 
-                # set TES bias
+                # set TES bias (initial value: set directly, no ramp)
                 self._instruments_inst.set_tes_bias(
                     np.max(sweep_config['tes_bias_vect']),
                     unit=tes_bias_unit,
@@ -438,10 +450,19 @@ class IV_dIdV(Sequencer):
                         f'{bias} ' + ' ' + tes_bias_unit +'!')
      
                     # set TES bias all channels
+                    # (ramp from present bias if enabled, except the
+                    #  first point which is set directly: ramping from
+                    #  an arbitrary initial bias would take too long)
+                    ramp_step = self._tes_bias_ramp_step
+                    if istep == 1:
+                        ramp_step = None
+
                     for channel in self._detector_channels:
 
-                        self._instruments_inst.set_tes_bias(
+                        self._instruments_inst.ramp_tes_bias(
                             bias, unit=tes_bias_unit,
+                            ramp_step=ramp_step,
+                            ramp_step_time=self._tes_bias_ramp_step_time,
                             detector_channel=channel,
                             use_net_resistance=single_TES_bias_source
                         )
@@ -1009,11 +1030,11 @@ class IV_dIdV(Sequencer):
                 
             # configuration
             config_dict = self._measurement_config[measurement.lower()]
-           
+
             # initialize detector
             for channel in self._detector_channels:
-                
-                # QET bias
+
+                # QET bias (initial value: set directly, no ramp)
                 self._instruments_inst.set_tes_bias(
                     config_dict['tes_bias'], unit='uA',
                     detector_channel=channel)
@@ -1217,9 +1238,14 @@ class IV_dIdV(Sequencer):
                 tes_bias_vect = [-x for x in tes_bias_vect]
                 
                 
-            config_dict['tes_bias_vect'] =  tes_bias_vect 
+            config_dict['tes_bias_vect'] =  tes_bias_vect
 
-          
+            # TES bias ramp (soft transition between bias points)
+            self._tes_bias_ramp_step, self._tes_bias_ramp_step_time = (
+                arg_utils.extract_tes_bias_ramp_config(
+                    config_dict, config_name='iv_didv')
+            )
+
             # Build temperature vector
             if self._enable_temperature_sweep:
                 if config_dict['use_temperature_vect']:

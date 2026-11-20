@@ -1,4 +1,4 @@
-
+*.nidaq.cfg
 *__pycache__/*
 *.pyc
 

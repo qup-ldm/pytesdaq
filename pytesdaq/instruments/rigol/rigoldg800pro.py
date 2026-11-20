@@ -309,8 +309,14 @@ class RigolDG800Pro(InstrumentComm):
     # Pulse width (original API)
     # ------------------------------------------------------------------
     def set_pulse_width(self, width, source=1):
-        """Set pulse width in seconds."""
-        self.write(f':SOUR{source}:FUNC:PULS:WIDT {width}')
+        """
+        Set pulse width in seconds.
+
+        Range 9 ns to 999.9 ks, limited by the pulse period T:
+        0.01%*T <= width <= 99.99%*T (set frequency first).
+        """
+        width = float(width)
+        self.write(f':SOUR{source}:FUNC:PULS:WIDT {width:.10E}')
 
     def get_pulse_width(self, source=1):
         """Get pulse width in seconds."""

@@ -119,6 +119,66 @@ def convert_to_seconds(par):
     return par_sec
         
         
+def extract_tes_bias_ramp_config(config_dict, config_name='sweep'):
+    """
+    Extract TES bias ramp (soft transition between bias points)
+    parameters from a configuration dictionary (sequencer "iv_didv"
+    section, or daq "iv"/"didv" sections):
+
+       use_tes_bias_ramp = true/false (default: false)
+       tes_bias_ramp_step = maximum bias change per ramp step
+                            (same unit as the bias: uA or mV)
+       tes_bias_ramp_step_time = wait time between ramp steps [s]
+                                 (default: 0.1)
+
+    Returns
+    -------
+    ramp_step : float or None
+        maximum bias change per step (None if ramp disabled)
+    ramp_step_time : float
+        wait time between steps [s]
+    """
+
+    ramp_step = None
+    ramp_step_time = 0.1
+
+    if config_dict is None:
+        return ramp_step, ramp_step_time
+
+    # enabled?
+    use_ramp = False
+    if 'use_tes_bias_ramp' in config_dict:
+        use_ramp = config_dict['use_tes_bias_ramp']
+        if isinstance(use_ramp, str):
+            use_ramp = (use_ramp.strip().lower() == 'true')
+        use_ramp = bool(use_ramp)
+
+    if not use_ramp:
+        return ramp_step, ramp_step_time
+
+    # step
+    if 'tes_bias_ramp_step' not in config_dict:
+        raise ValueError(
+            f'ERROR: "{config_name}" configuration requires '
+            '"tes_bias_ramp_step" if "use_tes_bias_ramp" = true!')
+
+    ramp_step = float(config_dict['tes_bias_ramp_step'])
+    if ramp_step <= 0:
+        raise ValueError(
+            f'ERROR: "{config_name}" configuration: '
+            '"tes_bias_ramp_step" should be > 0!')
+
+    # step time
+    if 'tes_bias_ramp_step_time' in config_dict:
+        ramp_step_time = float(config_dict['tes_bias_ramp_step_time'])
+        if ramp_step_time < 0:
+            raise ValueError(
+                f'ERROR: "{config_name}" configuration: '
+                '"tes_bias_ramp_step_time" should be >= 0!')
+
+    return ramp_step, ramp_step_time
+
+
 def extract_didv_signal_gen_config(arg_list):
     """
     Extract signal gen config dictionary

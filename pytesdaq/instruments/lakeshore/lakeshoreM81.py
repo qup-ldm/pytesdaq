@@ -1177,10 +1177,16 @@ class LakeshoreM81():
         offset = self._sg_offset_current.get(slot, 0.0)
         ac_pp = self._sg_ac_current_pp.get(slot, 0.0)
         if shape == 'DC':
+            # DC: level is the AMPLitude register (OFFSet forced to 0)
             module.set_current_amplitude(offset)
         else:
-            module.set_current_offset(offset)
+            # AC: write AMPLitude BEFORE OFFSet. Right after a DC->AC
+            # shape change, AMPLitude still holds the DC (TES bias)
+            # level and OFFSet is 0; writing OFFSet first makes
+            # |offset|+|amplitude| exceed a fixed range and the M81
+            # rejects it (-222), leaving the bias as the AC amplitude.
             module.set_current_amplitude(ac_pp/2.0)
+            module.set_current_offset(offset)
 
     def _sg_get_load(self, slot):
         load = self._sg_load_resistance.get(slot, self._sg_default_load)

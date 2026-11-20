@@ -223,7 +223,189 @@ class Control:
             return False
 
         return True
-    
+
+
+    def ramp_tes_bias(self, bias, unit=None,
+                      ramp_step=None, ramp_step_time=0.1,
+                      from_bias=None,
+                      use_net_resistance=None,
+                      tes_channel=None,
+                      detector_channel=None,
+                      adc_id=None, adc_channel=None):
+        """
+        Set TES bias with a soft transition ("ramp"): the bias is
+        changed from its present value to "bias" in equal increments
+        no larger than "ramp_step", waiting "ramp_step_time" seconds
+        between increments. This avoids SQUID jumps caused by a sudden
+        bias change (e.g. between IV/dIdV sweep points).
+
+        The present bias is read back from the instrument, unless
+        "from_bias" is provided. If the readback is not available,
+        the bias is set directly. If "ramp_step" is None or <= 0,
+        the bias is set directly (identical to set_tes_bias).
+
+        Parameters
+        ----------
+        bias : float
+            target TES bias
+        unit : str
+            'uA', 'A' or 'mV' (unit of bias, ramp_step and from_bias)
+        ramp_step : float, optional
+            maximum bias change per step [unit], None = no ramp
+        ramp_step_time : float, optional
+            wait time between steps [s] (default 0.1)
+        from_bias : float, optional
+            present bias [unit], read back from instrument if None
+        use_net_resistance : bool, optional
+            see set_tes_bias
+        tes_channel, detector_channel, adc_id, adc_channel :
+            channel selection, see set_tes_bias
+
+        Returns
+        -------
+        success : bool
+            True if all bias settings succeeded
+        """
+
+        # no ramp -> direct set
+        if ramp_step is None or float(ramp_step) <= 0:
+            return self.set_tes_bias(
+                bias, unit=unit,
+                use_net_resistance=use_net_resistance,
+                tes_channel=tes_channel,
+                detector_channel=detector_channel,
+                adc_id=adc_id, adc_channel=adc_channel)
+
+        # units
+        units = ['uA', 'muA', 'A', 'mV']
+        if unit is None or unit not in units:
+            raise ValueError(
+                'ERROR: TES bias unit required! '
+                'unit="uA", "A", or "mV"'
+            )
+
+        bias = float(bias)
+        ramp_step = abs(float(ramp_step))
+        ramp_step_time = float(ramp_step_time)
+        if ramp_step_time < 0:
+            raise ValueError('ERROR: "ramp_step_time" should be >= 0!')
+
+        # present bias (ramp starting point)
+        if from_bias is not None:
+            start = float(from_bias)
+        else:
+            start = self._read_tes_bias_for_ramp(
+                unit,
+                use_net_resistance=use_net_resistance,
+                tes_channel=tes_channel,
+                detector_channel=detector_channel,
+                adc_id=adc_id, adc_channel=adc_channel)
+
+        # ramp values (last value = target bias)
+        values = self._get_ramp_values(start, bias, ramp_step)
+        nb_steps = len(values)
+
+        if self._verbose and nb_steps > 1:
+            print(f'INFO: Ramping TES bias from {start:.6g} to {bias:.6g} '
+                  f'{unit} in {nb_steps} steps of '
+                  f'{abs(values[0]-start):.4g} {unit} '
+                  f'({ramp_step_time:g} s per step)')
+
+        # ramp
+        success = True
+        for istep, value in enumerate(values):
+
+            result = self.set_tes_bias(
+                value, unit=unit,
+                use_net_resistance=use_net_resistance,
+                tes_channel=tes_channel,
+                detector_channel=detector_channel,
+                adc_id=adc_id, adc_channel=adc_channel)
+
+            if not result:
+                success = False
+
+            # wait between steps (not after the last one)
+            if (istep < nb_steps-1
+                and ramp_step_time > 0
+                and not self._dummy_mode):
+                time.sleep(ramp_step_time)
+
+        return success
+
+
+    def _read_tes_bias_for_ramp(self, unit,
+                                use_net_resistance=None,
+                                tes_channel=None,
+                                detector_channel=None,
+                                adc_id=None, adc_channel=None):
+        """
+        Read back the present TES bias (ramp starting point)
+        Returns None if the readback is not available
+        """
+
+        # Lakeshore M81 current source shared by several bias lines:
+        # the readback is converted to this channel's current using
+        # the net load, which is only cached once set_tes_bias() has
+        # been called. Use the pre-calculated load
+        # (calc_tes_controller_load) so that the readback is in the
+        # same frame as the bias we are about to set.
+        if (use_net_resistance
+            and self._is_m81_current_mode('tes')
+            and self._m81_tes_net_load is None
+            and self._tes_controller_load is not None):
+            self._m81_tes_net_load = float(self._tes_controller_load)
+
+        bias = None
+        try:
+            bias = self.get_tes_bias(
+                unit=unit,
+                tes_channel=tes_channel,
+                detector_channel=detector_channel,
+                adc_id=adc_id, adc_channel=adc_channel)
+        except Exception as e:
+            print('WARNING: Unable to read back TES bias ('
+                  + str(e) + ')')
+            bias = None
+
+        if bias is None or not numpy.isfinite(bias):
+            print('WARNING: Present TES bias unknown. '
+                  'Setting TES bias without ramp!')
+            return None
+
+        return float(bias)
+
+
+    @staticmethod
+    def _get_ramp_values(start, stop, step):
+        """
+        Bias values from "start" (excluded) to "stop" (included)
+        in equal increments no larger than "step".
+        Returns [stop] if no ramp is needed or possible
+        (unknown start, or |stop-start| <= step)
+        """
+
+        stop = float(stop)
+
+        if (start is None or step is None
+            or not numpy.isfinite(start)
+            or float(step) <= 0):
+            return [stop]
+
+        start = float(start)
+        step = abs(float(step))
+        delta = stop - start
+
+        if abs(delta) <= step:
+            return [stop]
+
+        # number of steps (small tolerance for floating point
+        # errors, e.g. 0.3/0.1 = 2.9999... -> 3 steps)
+        nb_steps = int(numpy.ceil(abs(delta)/step*(1-1e-9)))
+        values = numpy.linspace(start, stop, nb_steps+1)[1:]
+
+        return [float(value) for value in values]
+
 
     def set_squid_bias(self, bias, unit=None,
                        tes_channel=None,
@@ -1139,8 +1321,16 @@ class Control:
                 shape, source=signal_gen_num)
              
         # offset
+
+        if (offset is not None
+            and (voltage_low is not None or voltage_high is not None)):
+            if self._verbose:
+                print('INFO: Laser signal generator: high/low voltage '
+                      'levels provided, offset ignored')
+            offset = None
+
         if offset is not None:
-            
+
             if (offset_unit is None
                 or offset_unit not in voltage_units):
                 raise ValueError('ERROR: signal generator "offset_unit" '
@@ -1222,18 +1412,18 @@ class Control:
                     level='high'
                 )
 
-            # pulse width
-            if pulse_width is not None:
-                self._laser_signal_generator_inst.set_pulse_width(
-                    pulse_width,
-                    source=signal_gen_num)
+        # pulse width (independent of voltage settings)
+        if pulse_width is not None:
+            self._laser_signal_generator_inst.set_pulse_width(
+                float(pulse_width),
+                source=signal_gen_num)
 
-            # align phase 
-            if align_phase_channel is not None:
-                self._laser_signal_generator_inst.align_phase(
-                    source=signal_gen_num,
-                    reference_source=int(align_phase_channel)
-                )
+        # align phase
+        if align_phase_channel is not None:
+            self._laser_signal_generator_inst.align_phase(
+                source=signal_gen_num,
+                reference_source=int(align_phase_channel)
+            )
                 
     def connect_signal_gen_to_feedback(self, do_connect, 
                                     tes_channel=None,
