@@ -665,6 +665,44 @@ class Config:
 
         return info
     
+    def get_pcs102_remote_info(self):
+        """
+        Returns a dictionary with the PCS102 (StarCryo pcSQUID GUI)
+        remote reset server info, from section:
+
+        [pcs102_remote]
+        host = ...
+        port = 8765      (optional)
+        token = ...      (optional)
+        timeout = 10     (optional)
+
+        Returns:
+           dict or NoneType (if section not available)
+        """
+        if not self._has_section('pcs102_remote'):
+            return None
+
+        info = {'host': None, 'port': 8765,
+                'token': None, 'timeout': 10.0}
+
+        if self._has_setting('pcs102_remote', 'host'):
+            info['host'] = self._get_setting('pcs102_remote', 'host')
+        if self._has_setting('pcs102_remote', 'port'):
+            info['port'] = int(self._get_setting('pcs102_remote', 'port'))
+        if self._has_setting('pcs102_remote', 'token'):
+            token = self._get_setting('pcs102_remote', 'token').strip()
+            if token and token != 'None':
+                info['token'] = token
+        if self._has_setting('pcs102_remote', 'timeout'):
+            info['timeout'] = float(
+                self._get_setting('pcs102_remote', 'timeout'))
+
+        if not info['host']:
+            print('ERROR: "host" required in [pcs102_remote] section!')
+            return None
+
+        return info
+
     def get_device_visa_address(self, device_name):
         """
         get visa address of a device assuming:

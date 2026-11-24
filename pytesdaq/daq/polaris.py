@@ -246,14 +246,14 @@ class PolarisTask:
         with subprocess.Popen(polaris_cmd,shell=True,stdout=subprocess.PIPE, 
                               stderr=subprocess.STDOUT,env=env) as running_task:
      
-            while running_task.poll() == None:
-
+            # read polaris output until EOF so that no line is lost
+            # (including error messages printed right before exit)
+            # and the pipe never fills up and blocks polaris
+            for output in running_task.stdout:
                 if self._verbose:
-                    output = running_task.stdout.readline()
-                    if output:
-                        print(output.strip().decode('utf-8'))
-                time.sleep(0.1)
-                        
+                    print(output.decode('utf-8', errors='replace').rstrip(),
+                          flush=True)
+            running_task.wait()
 
             if running_task.returncode !=0:
                 print('ERROR: polaris data taking ended with an error!')
@@ -264,8 +264,17 @@ class PolarisTask:
         duration_secs = (end - start).total_seconds()
         duration_secs = max(duration_secs, 1)
 
+        # polaris returns 0 even when a module (e.g. NI DAQ) fails,
+        # so check that the requested run time has been reached
+        if duration_secs < float(run_time) - 30:
+            print('WARNING: polaris stopped after ' + str(duration_secs)
+                  + ' seconds, before the requested run time of '
+                  + str(run_time) + ' seconds! See polaris output above '
+                  + '(probably an NI DAQ or HDF5 error).')
+            return True
+
         print('INFO: Data taking successfully done in ' + str(duration_secs) + ' seconds')
-        
+
 
         return True
 

@@ -17,6 +17,7 @@ from pytesdaq.instruments.keithley import Keithley2400
 from pytesdaq.instruments.agilent import Agilent33500B
 from pytesdaq.instruments.rigol import RigolDG800
 from pytesdaq.instruments.rigol import RigolDG800Pro
+from pytesdaq.instruments.starcryo import PCS102Remote
 import pytesdaq.io.redis as redis
 from pytesdaq.utils import connection_utils
 import pytesdaq.utils.remote as remote
@@ -47,7 +48,11 @@ class Control:
         # SQUID Controller
         self._squid_controller_name = self._config.get_squid_controller()
         self._squid_controller_inst = None
-        
+
+        # PCS102 (StarCryo GUI on Windows PC) remote reset
+        # client, instantiated when first needed
+        self._pcs102_remote_inst = None
+
         # TES Controller
         self._tes_controller_name = self._config.get_tes_controller()
         self._tes_controller_inst = None
@@ -167,6 +172,70 @@ class Control:
         Get SQUID Controller
         """
         return self._squid_controller_inst
+
+    def reset_squid(self, controller_channel=None,
+                    tes_channel=None,
+                    detector_channel=None,
+                    adc_id=None, adc_channel=None):
+        """
+        Reset SQUID (flux lock loop) by clicking the "Reset" button
+        of the PCS102 GUI running on the Windows PC
+        (requires [pcs102_remote] section in setup.ini and
+        windows/pcs102/pcs102_reset_server.py running on Windows)
+
+        Default (no channel argument): reset ALL channels
+        (PCS102 MASTER mode, server checks MASTER is enabled)
+
+        Single channel (requires MASTER off and channel configured
+        on Windows server): PCS102 "controller_channel" directly,
+        or resolved from connection table (tes/detector/adc channel)
+
+        Returns:
+           bool (True if reset succeeded)
+        """
+
+        # controller channel
+        single_channel_args = (tes_channel, detector_channel,
+                               adc_id, adc_channel)
+        if (controller_channel is None
+            and all(arg is None for arg in single_channel_args)):
+            controller_channel = 'all'
+
+        elif controller_channel is None:
+            controller_info = connection_utils.get_controller_info(
+                self._connection_table,
+                tes_channel=tes_channel,
+                detector_channel=detector_channel,
+                adc_id=adc_id,
+                adc_channel=adc_channel)
+            if controller_info is None:
+                raise ValueError('ERROR: Unable to find controller channel '
+                                 'in connection table!')
+            controller_channel = controller_info[1]
+
+        if self._dummy_mode:
+            print(f'INFO (dummy mode): SQUID reset channel '
+                  f'{controller_channel}')
+            return True
+
+        # instantiate client
+        if self._pcs102_remote_inst is None:
+            info = self._config.get_pcs102_remote_info()
+            if info is None:
+                print('ERROR: No [pcs102_remote] section in setup file. '
+                      'Unable to reset SQUID!')
+                return False
+            self._pcs102_remote_inst = PCS102Remote(
+                info['host'], port=info['port'],
+                token=info['token'], timeout=info['timeout'],
+                verbose=self._verbose)
+
+        ok = self._pcs102_remote_inst.reset(controller_channel)
+
+        if not ok and self._raise_errors:
+            raise RuntimeError(f'ERROR: SQUID reset failed for channel '
+                               f'{controller_channel}!')
+        return ok
 
     def get_signal_gen_controller(self):
         """
