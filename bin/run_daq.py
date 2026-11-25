@@ -41,6 +41,12 @@ if __name__ == "__main__":
                         help=('Total duration in seconds(s)/minutes(m) or hours(h), '
                               'example: 10s, 10m, or 10h'))
     # trigger type
+    parser.add_argument('--sleep_time', '--sleep-time', type=str,
+                        help=('Pause between series in seconds(s)/'
+                              'minutes(m)/hours(h), overrides '
+                              '"series_sleep_time" in daq config. '
+                              'With a pause, --duration is total '
+                              'wall-clock time'))
     parser.add_argument('--acquire-cont', '--acquire-continuous',
                         dest="acquire_cont", action="store_true",
                         help='Acquire continuous data')
@@ -198,7 +204,8 @@ if __name__ == "__main__":
 
 
     
-    daq_control.run(duration=duration, comment=comment)
+    daq_control.run(duration=duration, comment=comment,
+                    sleep_time=args.sleep_time)
 
 
         

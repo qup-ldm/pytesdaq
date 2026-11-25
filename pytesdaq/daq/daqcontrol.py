@@ -149,9 +149,14 @@ class DAQControl:
                 adc_setup_default
             )
             
-    def run(self, duration=None, comment='No Comment'):
+    def run(self, duration=None, comment='No Comment',
+            sleep_time=None):
         """
         run daq
+
+        sleep_time: pause between series (e.g. '9m'), overrides
+                    daq.ini "series_sleep_time". With a pause,
+                    "duration" is the total wall-clock time.
         """
 
         # get adc and daq  config
@@ -174,6 +179,15 @@ class DAQControl:
         
         duration_sec = arg_utils.convert_to_seconds(duration)
 
+        # pause between series (dead time), 0 = none
+        if sleep_time is None:
+            sleep_time = daq_config.get('series_sleep_time', 0)
+        if isinstance(sleep_time, (int, float)):
+            # plain number (config converts "0" to 0.0) -> seconds
+            sleep_time_sec = float(sleep_time)
+        else:
+            sleep_time_sec = arg_utils.convert_to_seconds(sleep_time)
+
         # individual series time
         nb_runs = 1
         series_time_sec =  duration_sec
@@ -184,11 +198,20 @@ class DAQControl:
                     self._daq_config[self._acquisition_type]['series_max_time']
                 )
             )
-            nb_runs = int(round(duration_sec/series_max_time_sec))
+            if sleep_time_sec > 0:
+                # duration = wall-clock time: n series + (n-1) pauses
+                nb_runs = int((duration_sec + sleep_time_sec)
+                              // (series_max_time_sec + sleep_time_sec))
+            else:
+                nb_runs = int(round(duration_sec/series_max_time_sec))
             if nb_runs < 1:
                 nb_runs = 1
             else:
                 series_time_sec = series_max_time_sec
+        elif sleep_time_sec > 0:
+            print('WARNING: "series_max_time" not set: single series, '
+                  'sleep time ignored!')
+            sleep_time_sec = 0
 
         if self._verbose:
             series_time_val = series_time_sec
@@ -197,6 +220,10 @@ class DAQControl:
                 series_time_val = series_time_sec/60
                 series_time_unit = 'minutes'
             series_time_string = f'{series_time_val:.2g}'
+            if sleep_time_sec > 0 and nb_runs > 1:
+                duty = series_time_sec/(series_time_sec + sleep_time_sec)
+                print(f'INFO: {sleep_time_sec/60:.3g} minutes pause '
+                      f'between series ({duty:.0%} duty cycle)')
                 
             if nb_runs > 1:
                 print(f'INFO: Data taking will be divided in '
@@ -509,6 +536,16 @@ class DAQControl:
                              group_time=group_timestamp,
                              data_prefix=iv_prefix,
                              data_path=group_path)
+
+            # pause between series (after rail check and
+            # end-of-series runs; next series starts with
+            # its own rail check)
+            if sleep_time_sec > 0 and irun < nb_runs - 1:
+                if self._verbose:
+                    print(f'INFO: Sleeping {sleep_time_sec/60:.3g} '
+                          f'minutes before series #{irun+2}')
+                time.sleep(sleep_time_sec)
+
         # cleanup
         if self._verbose:
             print(f'INFO: Data taking for group {group_name} '
