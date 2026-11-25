@@ -2,6 +2,7 @@ import argparse
 import numpy as np
 import os
 from pytesdaq.utils import arg_utils
+from pytesdaq.utils import run_log
 from pytesdaq.sequencer.iv_didv import IV_dIdV
 
 if __name__ == "__main__":
@@ -37,7 +38,17 @@ if __name__ == "__main__":
     parser.add_argument('--pickle_file', type = str,help='Pickle file with channel dependent sweep arrays')
     parser.add_argument('--dummy_mode', dest='dummy_mode', action='store_true')
    
+    parser.add_argument('--log', choices=['copy', 'file', 'none'],
+                        default='copy',
+                        help=('Log of screen output in the run directory '
+                              '(run.log): "copy" = terminal + file '
+                              '[default], "file" = file only, '
+                              '"none" = terminal only'))
+
     args = parser.parse_args()
+
+    # log screen output (written in run directory once created)
+    run_log.start(args.log)
 
 
     comment = 'No comment'

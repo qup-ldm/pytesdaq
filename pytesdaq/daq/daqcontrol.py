@@ -6,6 +6,7 @@ from pytesdaq.daq import DAQ
 from pytesdaq.utils import arg_utils
 from pytesdaq.utils import connection_utils
 from pytesdaq.utils import rail_guard
+from pytesdaq.utils import run_log
 from pytesdaq.instruments import control as instrument
 from pytesdaq.io import convert_length_msec_to_samples
 import os
@@ -244,6 +245,11 @@ class DAQControl:
         if self._verbose:
             print(f'INFO: Data taking group = {group_name}')
             print(f'INFO: Ouput Directory = {group_path}')
+
+        # copy configuration files used and log into group directory
+        run_log.save_config_files(group_path, [self._config.setup_file,
+                                               self._config.daq_file])
+        run_log.attach(group_path)
             
     
         # -----------------------

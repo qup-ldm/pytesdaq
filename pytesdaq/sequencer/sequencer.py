@@ -9,6 +9,7 @@ import pytesdaq.config.settings as settings
 import pytesdaq.instruments.control as instrument
 from pytesdaq.utils import connection_utils
 from pytesdaq.utils import arg_utils
+from pytesdaq.utils import run_log
 from pytesdaq.daq import daq
 
 class Sequencer:
@@ -405,6 +406,13 @@ class Sequencer:
           self._raw_data_path = self._base_raw_data_path  + '/' + self._group_name 
           if self._save_raw_data and self._detector_channels is not None:
                arg_utils.make_directories(self._raw_data_path)
+
+               # copy configuration files used and log into
+               # measurement directory
+               run_log.save_config_files(self._raw_data_path,
+                                         [self._config.setup_file,
+                                          self._config.daq_file])
+               run_log.attach(self._raw_data_path)
                              
           # automation path
           self._automation_data_path = (self._base_automation_data_path

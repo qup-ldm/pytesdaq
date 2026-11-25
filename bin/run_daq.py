@@ -1,6 +1,7 @@
 import argparse
 import pytesdaq.daq as daq
 from pytesdaq.utils import arg_utils
+from pytesdaq.utils import run_log
 from pytesdaq.daq import DAQControl
 import numpy as np
 import os
@@ -97,8 +98,17 @@ if __name__ == "__main__":
                                 '[default: pytesdaq/config/setup.ini]'))
     # verbose
     parser.add_argument('--quiet', action="store_true", help='Remove Screen output')            
+    parser.add_argument('--log', choices=['copy', 'file', 'none'],
+                        default='copy',
+                        help=('Log of screen output in the run directory '
+                              '(run.log): "copy" = terminal + file '
+                              '[default], "file" = file only, '
+                              '"none" = terminal only'))
         
     args = parser.parse_args()
+
+    # log screen output (written in run directory once created)
+    run_log.start(args.log)
 
     # TEMP
     args.acquire_thresh = False
