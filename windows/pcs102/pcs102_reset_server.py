@@ -46,6 +46,8 @@ Color steps (box in client coords, "locate" prints colors):
       again (restore) and fail. Add "present": false to ensure the color
       is ABSENT instead (single channel resets: MASTER must be off)
 Default channels "1"-"4": MASTER off, click Ch N radio button, RESET.
+Timing: "window_delay" (after bringing window to front) and "step_delay"
+(after each step; a step's own "delay" overrides it), default 0.05 s.
 Coordinates are relative to the top-left of the window CLIENT area, as printed
 by "locate", so they survive moving the window (not resizing/re-layout).
 """
@@ -76,6 +78,11 @@ DEFAULT_CONFIG = {
     # "mouse": real mouse click (needs unlocked, visible desktop)
     # "message": posted window messages (no mouse/focus, may be ignored by app)
     'click_method': 'mouse',
+    # seconds to wait after bringing the PCS102 window to the front
+    # (raise if checks fail when the window was minimized/covered)
+    'window_delay': 0.05,
+    # default seconds to wait after each step (a step's "delay" overrides)
+    'step_delay': 0.05,
     'host': '0.0.0.0',
     'port': 8765,
     'token': '',
@@ -86,7 +93,7 @@ DEFAULT_CONFIG = {
             {'ensure_color': {'x': 207, 'y': 87, 'w': 60, 'h': 12,
                               'rgb': [255, 0, 0], 'tol': 80},
              'click': {'x': 237, 'y': 93},
-             'delay': 0.5,
+             'delay': 0.05,
              'error': 'Could not enable MASTER: refusing reset'},
             {'x': 237, 'y': 37},
         ],
@@ -97,9 +104,9 @@ DEFAULT_CONFIG = {
                               'rgb': [255, 0, 0], 'tol': 80},
              'present': False,
              'click': {'x': 237, 'y': 93},
-             'delay': 0.5,
+             'delay': 0.05,
              'error': 'Could not disable MASTER: refusing reset'},
-            {'x': 64, 'y': y, 'delay': 0.3},
+            {'x': 64, 'y': y, 'delay': 0.05},
             {'x': 237, 'y': 37},
         ] for ch, y in ((1, 146), (2, 179), (3, 212), (4, 245))},
     },
@@ -168,6 +175,70 @@ def cursor_pos():
     pt = ctypes.wintypes.POINT()
     user32.GetCursorPos(ctypes.byref(pt))
     return pt.x, pt.y
+
+
+user32.WindowFromPoint.restype = ctypes.c_void_p
+user32.WindowFromPoint.argtypes = [ctypes.wintypes.POINT]
+user32.GetAncestor.restype = ctypes.c_void_p
+user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                ctypes.c_int, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+
+HWND_TOPMOST = ctypes.c_void_p(-1)
+HWND_NOTOPMOST = ctypes.c_void_p(-2)
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x1, 0x2, 0x10, 0x40
+SW_RESTORE, SW_MINIMIZE = 9, 6
+GA_ROOT = 2
+
+
+def bring_to_front(win, delay=0.05):
+    """
+    Make the PCS102 window visible on top of all other windows.
+    Uses "topmost" z-order, which works even when Windows refuses
+    a focus change from a background process.
+
+    Returns:
+       bool (True if window was minimized)
+    """
+    hwnd = win.handle
+    was_minimized = win.is_minimized()
+    if was_minimized:
+        user32.ShowWindow(hwnd, SW_RESTORE)
+    user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+    try:
+        win.set_focus()   # best effort, may be refused by Windows
+    except Exception:
+        pass
+    time.sleep(delay)     # let restore / repaint finish
+    return was_minimized
+
+
+def release_front(win, was_minimized):
+    """
+    Undo bring_to_front: remove topmost, re-minimize if needed
+    """
+    user32.SetWindowPos(win.handle, HWND_NOTOPMOST, 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+    if was_minimized:
+        user32.ShowWindow(win.handle, SW_MINIMIZE)
+
+
+def assert_visible_at(win, x, y):
+    """
+    Raise if the PCS102 window is not the window actually on screen
+    at client coords (x, y) (covered, off-screen...). Prevents
+    clicking / reading another window.
+    """
+    sx, sy = client_to_screen(win.handle, x, y)
+    hit = user32.WindowFromPoint(ctypes.wintypes.POINT(sx, sy))
+    root = user32.GetAncestor(hit, GA_ROOT) if hit else None
+    if root != win.handle:
+        raise RuntimeError(
+            f'PCS102 window not visible at ({x}, {y}): covered by '
+            f'another window or off-screen. Refusing to click/read.')
 
 
 def screen_pixel(sx, sy):
@@ -245,7 +316,7 @@ def grab_region(sx, sy, w, h):
         user32.ReleaseDC(None, hdc_screen)
 
 
-def region_has_color(hwnd, box):
+def region_has_color(hwnd, box, win=None):
     """
     Check if any pixel in client-coordinate box {x, y, w, h}
     is within "tol" (per RGB component) of "rgb"
@@ -256,6 +327,9 @@ def region_has_color(hwnd, box):
     target = box['rgb']
     tol = int(box.get('tol', 60))
     w, h = max(1, int(box.get('w', 1))), max(1, int(box.get('h', 1)))
+    if win is not None:
+        for cx, cy in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+            assert_visible_at(win, box['x'] + cx, box['y'] + cy)
     sx, sy = client_to_screen(hwnd, box['x'], box['y'])
     data = grab_region(sx, sy, w, h)
 
@@ -270,7 +344,7 @@ def region_has_color(hwnd, box):
     return best[2] <= tol, best[0], best[1]
 
 
-def click_step(win, win_spec, step, method):
+def click_step(win, win_spec, step, method, step_delay=0.05):
     """
     Execute one click step
     """
@@ -283,7 +357,7 @@ def click_step(win, win_spec, step, method):
         # "present": false -> ensure color ABSENT (e.g. MASTER off)
         box = step['ensure_color']
         want = bool(step.get('present', True))
-        found, rgb, xy = region_has_color(win.handle, box)
+        found, rgb, xy = region_has_color(win.handle, box, win=win)
         if found == want:
             return
         toggle = dict(step['click'])
@@ -291,12 +365,12 @@ def click_step(win, win_spec, step, method):
                      '(%s, %s)', box['rgb'],
                      'missing' if want else 'present', rgb,
                      toggle['x'], toggle['y'])
-        click_step(win, win_spec, toggle, method)
-        time.sleep(float(step.get('delay', 0.5)))
-        found, rgb, xy = region_has_color(win.handle, box)
+        click_step(win, win_spec, toggle, method, step_delay)
+        time.sleep(float(step.get('delay', step_delay)))
+        found, rgb, xy = region_has_color(win.handle, box, win=win)
         if found == want:
             return
-        click_step(win, win_spec, toggle, method)   # undo
+        click_step(win, win_spec, toggle, method, step_delay)   # undo
         msg = step.get('error', 'Toggle did not reach expected color state')
         raise RuntimeError(f'{msg} [rgb={box["rgb"]} wanted '
                            f'{"present" if want else "absent"}, closest '
@@ -307,7 +381,7 @@ def click_step(win, win_spec, step, method):
         # guard: fail unless some pixel in the box has the expected
         # color (e.g. MASTER text red). Needs the window visible.
         box = step['expect_color']
-        ok, rgb, xy = region_has_color(win.handle, box)
+        ok, rgb, xy = region_has_color(win.handle, box, win=win)
         if not ok:
             msg = step.get('error', 'Expected color not found')
             raise RuntimeError(f'{msg} [wanted rgb={box["rgb"]}, closest '
@@ -324,6 +398,7 @@ def click_step(win, win_spec, step, method):
     elif 'x' in step and 'y' in step:
         x, y = int(step['x']), int(step['y'])
         if method == 'mouse':
+            assert_visible_at(win, x, y)   # never click another window
             sx, sy = client_to_screen(win.handle, x, y)
             mouse.click(button='left', coords=(sx, sy))
         else:
@@ -350,7 +425,7 @@ def click_step(win, win_spec, step, method):
         raise ValueError(f'Invalid step {step}: '
                          f'need "control", "x"/"y" or "key"')
 
-    time.sleep(float(step.get('delay', 0.1)))
+    time.sleep(float(step.get('delay', step_delay)))
 
 
 def do_reset(config, channel):
@@ -363,6 +438,7 @@ def do_reset(config, channel):
                          f'(configured: {list(config["channels"])})')
 
     method = config['click_method']
+    step_delay = float(config.get('step_delay', 0.05))
 
     with _lock:
         win, win_spec = find_window(config, spec=True)
@@ -370,16 +446,16 @@ def do_reset(config, channel):
         prev_pos = cursor_pos()
         prev_fg = user32.GetForegroundWindow()
 
-        if method == 'mouse':
-            if win.is_minimized():
-                win.restore()
-            win.set_focus()
-            time.sleep(0.2)
+        # window must be on top: color checks read the screen and
+        # mouse clicks hit whatever is visible
+        was_minimized = bring_to_front(
+            win, float(config.get('window_delay', 0.05)))
 
         try:
             for step in steps:
-                click_step(win, win_spec, step, method)
+                click_step(win, win_spec, step, method, step_delay)
         finally:
+            release_front(win, was_minimized)
             if method == 'mouse':
                 # put mouse and focus back where the user had them
                 user32.SetCursorPos(*prev_pos)
@@ -490,6 +566,24 @@ def locate(config):
         print(f'   {{"x": {x}, "y": {y}}}    color rgb={screen_pixel(sx, sy)}')
 
 
+def check_steps(win, config, channel):
+    """
+    Report color guard steps of a channel entry (no clicks)
+    """
+    for step in config['channels'].get(channel, []):
+        box = step.get('expect_color', step.get('ensure_color'))
+        if not box:
+            continue
+        want = bool(step.get('present', True))
+        found, rgb, xy = region_has_color(win.handle, box, win=win)
+        action = ('OK, no toggle click needed' if found == want
+                  else 'toggle would be clicked')
+        print(f'box {box}  (want color '
+              f'{"present" if want else "absent"})\n'
+              f'  -> color {"FOUND" if found else "NOT found"}: '
+              f'closest rgb={rgb} at {xy}  =>  {action}')
+
+
 def main():
     config = load_config()
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'serve'
@@ -508,20 +602,12 @@ def main():
         # run only the color guard steps (no clicks)
         channel = sys.argv[2] if len(sys.argv) > 2 else 'all'
         win = find_window(config)
-        if win.is_minimized():
-            win.restore()
-        win.set_focus()
-        time.sleep(0.3)
-        for step in config['channels'].get(channel, []):
-            box = step.get('expect_color', step.get('ensure_color'))
-            if box:
-                want = bool(step.get('present', True))
-                found, rgb, xy = region_has_color(win.handle, box)
-                print(f'box {box}  (want color '
-                      f'{"present" if want else "absent"})\n'
-                      f'  -> color {"FOUND" if found else "NOT found"}: '
-                      f'closest rgb={rgb} at {xy}  =>  '
-                      f'{"OK, no toggle click needed" if found == want else "toggle would be clicked"}')
+        was_minimized = bring_to_front(
+            win, float(config.get('window_delay', 0.05)))
+        try:
+            check_steps(win, config, channel)
+        finally:
+            release_front(win, was_minimized)
     elif cmd == 'serve':
         setup_logging()
         serve(config)

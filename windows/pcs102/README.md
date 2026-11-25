@@ -131,6 +131,12 @@ ctl.reset_squid(detector_channel='TES2')   # same, via setup.ini connections
 Each call returns True or False. With the default `raise_errors=True`, a
 failed reset raises an error that includes the server's reason.
 
+The PCS102 window may be behind other windows or minimized. For each reset
+the server pins it on top (restoring it first if minimized) and puts it
+back afterwards. Before every click or colour read, it checks that the
+PCS102 window is the one on screen at that point, and refuses rather than
+click another window.
+
 After a reset, MASTER stays in whatever state that reset needed, and the
 last channel stays selected. Check both before tuning by hand. Every reset is
 logged in `pcs102_reset_server.log` on the Windows PC.
@@ -143,5 +149,6 @@ logged in `pcs102_reset_server.log` on the Windows PC.
 | `ping` says `window_found: false` | PCS102DA isn't open, or `window_title_re` in the config doesn't match its title. Run `inspect` to list window titles. |
 | "Could not enable/disable MASTER" | The colour check didn't see the expected change, so MASTER was clicked back. Run `check` and fix the `ensure_color` area, `rgb` or `click` position. |
 | Clicks the wrong place | The window was resized or the scaling changed. Measure again with `locate`. |
+| "PCS102 window not visible at (x, y)" | Something still covered that point after the window was pinned on top (e.g. another always-on-top window), or the window is partly off-screen. Move the PCS102 window fully onto the main screen. |
 | Resets fail when nobody is at the PC | The screen is locked or the PC is asleep. See section 4. |
 | "bad token" | The token in setup.ini doesn't match the config. |
