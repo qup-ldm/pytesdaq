@@ -8,6 +8,7 @@ import pytesdaq.instruments.control as instrument
 from pytesdaq.sequencer.sequencer import Sequencer
 from pytesdaq.utils import connection_utils
 from pytesdaq.utils import arg_utils
+from pytesdaq.utils import rail_guard
 from scipy import signal
 import qetpy as qp
 from datetime import datetime
@@ -42,12 +43,8 @@ class IV_dIdV(Sequencer):
         self._do_zero_offset = do_zero
 
         # SQUID rail guard (set in _configure() from
-        # iv_didv.ini [iv_didv])
-        self._rail_guard = False
-        self._rail_fraction = 0.75    # of ADC voltage range
-        self._rail_nb_traces = 10
-        self._rail_max_resets = 2
-        self._rail_reset_wait = 0.5   # [s]
+        # iv_didv.ini [iv_didv]), disabled by default
+        self._rail_guard = rail_guard.RailGuard()
 
         # TES bias ramp (soft transition between bias points)
         # set in _configure() from "iv_didv" configuration
@@ -1149,75 +1146,31 @@ class IV_dIdV(Sequencer):
     def _read_online_traces(self, nb_events=100, nb_samples=5000):
         """
         Short continuous read (pydaqmx) of detector channels,
-        between Polaris runs (zero offset, online IV, rail guard)
+        between Polaris runs (zero offset, online IV)
 
         Returns:
            data_array [events, channels, samples] (volts),
            sample_rate
         """
-        daq_online = daq.DAQ(driver_name='pydaqmx', verbose=False)
         adc_dict = connection_utils.get_adc_channel_list(
             self._detector_connection_table,
             detector_channel_list=self._detector_channels)
-        sample_rate = None
-        setup_dict = dict()
-        for adc_id, adc_list in adc_dict.items():
-            setup_dict[adc_id] = copy.deepcopy(
-                self._config.get_adc_setup(adc_id))
-            setup_dict[adc_id]['nb_samples'] = nb_samples
-            setup_dict[adc_id]['channel_list'] = adc_list
-            setup_dict[adc_id]['trigger_type'] = 3
-            sample_rate = setup_dict[adc_id]['sample_rate']
-        daq_online.set_adc_config_from_dict(setup_dict)
-        try:
-            data_array = daq_online.read_many_events(
-                nb_events, adctovolt=True)
-        finally:
-            daq_online.clear()
-        return data_array, sample_rate
+        return rail_guard.read_online_traces(
+            self._config, adc_dict,
+            nb_events=nb_events, nb_samples=nb_samples)
 
 
     def _check_rail(self, adc_setup):
         """
-        SQUID rail guard: reset SQUIDs (all channels) if any
-        channel baseline |V| > rail_fraction x measurement ADC
-        voltage range, re-check, retry up to max resets
+        SQUID rail guard (see pytesdaq.utils.rail_guard)
 
         Returns:
            (ok, nb_resets)
         """
-        if not self._rail_guard or self._dummy_mode:
+        if self._dummy_mode:
             return True, 0
-
-        rail = min(min(abs(float(d['voltage_min'])),
-                       abs(float(d['voltage_max'])))
-                   for d in adc_setup.values())
-        threshold = self._rail_fraction * rail
-
-        for nb_resets in range(self._rail_max_resets + 1):
-            data, _ = self._read_online_traces(
-                nb_events=self._rail_nb_traces)
-            baselines = np.mean(data, axis=(0, 2))
-            railed = [f'{ch} ({v:.2f} V)' for ch, v in
-                      zip(self._detector_channels, baselines)
-                      if abs(v) > threshold]
-            if not railed:
-                return True, nb_resets
-            if nb_resets == self._rail_max_resets:
-                break
-            print('WARNING: SQUID railed (|V| > '
-                  f'{threshold:.2f} V): {", ".join(railed)}.'
-                  ' Resetting SQUIDs!')
-            try:
-                self._instruments_inst.reset_squid()
-            except Exception as e:
-                print(f'ERROR: SQUID reset failed: {e}')
-                return False, nb_resets
-            time.sleep(self._rail_reset_wait)
-
-        print(f'ERROR: SQUID still railed after {nb_resets}'
-              ' resets: ' + ', '.join(railed))
-        return False, nb_resets
+        return self._rail_guard.check(self._instruments_inst,
+                                      self._config, adc_setup)
 
 
     def _guarded_run(self, adc_setup, **run_args):
@@ -1309,23 +1262,10 @@ class IV_dIdV(Sequencer):
             )
 
             # SQUID rail guard
-            guard = config_dict.get('rail_guard', False)
-            if isinstance(guard, str):
-                guard = guard.strip().lower() in (
-                    'true', 'yes', '1')
-            self._rail_guard = bool(guard)
-            self._rail_fraction = float(config_dict.get(
-                'rail_fraction', self._rail_fraction))
-            self._rail_nb_traces = int(config_dict.get(
-                'rail_nb_traces', self._rail_nb_traces))
-            self._rail_max_resets = int(config_dict.get(
-                'rail_max_resets', self._rail_max_resets))
-            self._rail_reset_wait = float(config_dict.get(
-                'rail_reset_wait', self._rail_reset_wait))
-            if self._rail_guard:
-                print('INFO: SQUID rail guard enabled: reset '
-                      f'if |baseline| > {self._rail_fraction:.0%}'
-                      ' of ADC range')
+            self._rail_guard = rail_guard.RailGuard.from_config(
+                config_dict)
+            if self._rail_guard.enabled:
+                print(f'INFO: {self._rail_guard}')
 
             # Build temperature vector
             if self._enable_temperature_sweep:

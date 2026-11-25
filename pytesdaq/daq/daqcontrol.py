@@ -5,6 +5,7 @@ from pytesdaq.config import settings
 from pytesdaq.daq import DAQ
 from pytesdaq.utils import arg_utils
 from pytesdaq.utils import connection_utils
+from pytesdaq.utils import rail_guard
 from pytesdaq.instruments import control as instrument
 from pytesdaq.io import convert_length_msec_to_samples
 import os
@@ -91,6 +92,12 @@ class DAQControl:
             setup_file=setup_file,
             verbose=verbose
         )
+
+        # SQUID rail guard (daq.ini acquisition section)
+        self._rail_guard = rail_guard.RailGuard.from_config(
+            self._daq_config[acquisition_type])
+        if self._rail_guard.enabled and verbose:
+            print(f'INFO: {self._rail_guard}')
 
         # ------------------------
         # IV/dIdV/calibration specific
@@ -402,6 +409,16 @@ class DAQControl:
                 detector_config = self._read_detector_settings(adc_config)
                 mydaq.set_detector_config(detector_config)
                 time.sleep(2)
+
+                # SQUID rail guard (before series)
+                ok, _ = self._rail_guard.check(
+                    self._instruments_inst, self._config,
+                    adc_config)
+                if not ok:
+                    mydaq.clear()
+                    print('ERROR: SQUIDs railed and could not '
+                          'be reset. Exiting!')
+                    return
                 
                 # take data
                 success = mydaq.run(run_time=series_time_sec,
@@ -416,6 +433,20 @@ class DAQControl:
                 if not success:
                     mydaq.clear()
                     print('ERROR: Problem with data taking. Exiting!')
+                    return
+
+                # SQUID rail guard (after series): a reset
+                # here means it railed during the series
+                ok, nb_resets = self._rail_guard.check(
+                    self._instruments_inst, self._config,
+                    adc_config)
+                if nb_resets > 0:
+                    print(f'WARNING: SQUID railed during series '
+                          f'#{irun+1} ({raw_prefix}), data kept!')
+                if not ok:
+                    mydaq.clear()
+                    print('ERROR: SQUIDs railed and could not '
+                          'be reset. Exiting!')
                     return
 
                 
