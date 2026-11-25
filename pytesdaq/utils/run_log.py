@@ -14,6 +14,8 @@ Log modes:
    'file': output only in <run_dir>/run.log (terminal shows its path)
    'none': no log file (terminal only)
 
+Each line (terminal and log file, all modes) starts with date/time
+("YYYY-MM-DD HH:MM:SS.mmm | ").
 Output printed before the run directory is known is kept in memory
 and written at the beginning of the log. Errors and tracebacks
 (stderr) are logged too. Without start() (e.g. notebooks), attach()
@@ -32,14 +34,33 @@ LOG_MODES = ('copy', 'file', 'none')
 
 _lock = threading.RLock()
 _state = {'mode': 'none', 'buffer': None, 'file': None, 'path': None,
-          'stdout': None, 'stderr': None}
+          'stdout': None, 'stderr': None, 'line_start': True,
+          'term_line_start': True}
+
+
+def _timestamp(text, key='line_start'):
+    """
+    Prefix each new line of text with date/time. Text may arrive
+    in pieces (print writes text, then newline), so the timestamp
+    is added only at the start of a line. Line start tracked
+    separately for log file ('line_start') and terminal
+    ('term_line_start').
+    """
+    stamp = f'{datetime.now():%Y-%m-%d %H:%M:%S.%f}'[:-3] + ' | '
+    out = list()
+    for line in text.splitlines(keepends=True):
+        if _state[key]:
+            out.append(stamp)
+        out.append(line)
+        _state[key] = line.endswith(('\n', '\r'))
+    return ''.join(out)
 
 
 class _Tee(io.TextIOBase):
     """
     Replacement for sys.stdout/sys.stderr writing to the terminal
-    (mode 'copy') and to the log file (or memory buffer until a
-    log file is attached)
+    (modes 'copy' and 'none') and to the log file (or memory buffer
+    until a log file is attached), with date/time on each line
     """
 
     def __init__(self, terminal):
@@ -47,12 +68,13 @@ class _Tee(io.TextIOBase):
 
     def write(self, text):
         with _lock:
-            if _state['mode'] == 'copy':
-                self._terminal.write(text)
+            if _state['mode'] in ('copy', 'none'):
+                self._terminal.write(
+                    _timestamp(text, 'term_line_start'))
             if _state['file'] is not None:
-                _state['file'].write(text)
+                _state['file'].write(_timestamp(text))
             elif _state['buffer'] is not None:
-                _state['buffer'].write(text)
+                _state['buffer'].write(_timestamp(text))
         return len(text)
 
     def flush(self):
@@ -76,9 +98,10 @@ def _terminal_print(message):
     """
     Print to the real terminal regardless of log mode
     """
-    terminal = _state['stdout'] or sys.stdout
-    terminal.write(message + '\n')
-    terminal.flush()
+    with _lock:
+        terminal = _state['stdout'] or sys.stdout
+        terminal.write(_timestamp(message + '\n', 'term_line_start'))
+        terminal.flush()
 
 
 def start(mode='copy'):
@@ -92,12 +115,13 @@ def start(mode='copy'):
         if _state['stdout'] is not None:
             stop()
         _state['mode'] = mode
-        if mode == 'none':
-            return
-        _state['buffer'] = io.StringIO()
-        _state['buffer'].write(
-            f'# {datetime.now():%Y-%m-%d %H:%M:%S}  '
-            f'{" ".join(sys.argv)}\n')
+        _state['line_start'] = True
+        _state['term_line_start'] = True
+        if mode != 'none':
+            _state['buffer'] = io.StringIO()
+            _state['buffer'].write(
+                f'# {datetime.now():%Y-%m-%d %H:%M:%S}  '
+                f'{" ".join(sys.argv)}\n')
         _state['stdout'], _state['stderr'] = sys.stdout, sys.stderr
         sys.stdout = _Tee(_state['stdout'])
         sys.stderr = _Tee(_state['stderr'])
@@ -123,8 +147,11 @@ def attach(run_dir, name='run.log'):
         os.makedirs(run_dir, exist_ok=True)
         new_file = open(path, 'a', buffering=1)
         if _state['file'] is not None:
+            if not _state['line_start']:
+                _state['file'].write('\n')
             _state['file'].write(f'# log continued in {path}\n')
             _state['file'].close()
+            _state['line_start'] = True
         elif _state['buffer'] is not None:
             new_file.write(_state['buffer'].getvalue())
             _state['buffer'] = None
@@ -148,7 +175,8 @@ def stop():
         if _state['file'] is not None:
             _state['file'].close()
         _state.update({'buffer': None, 'file': None, 'path': None,
-                       'stdout': None, 'stderr': None})
+                       'stdout': None, 'stderr': None,
+                       'line_start': True, 'term_line_start': True})
 
 
 atexit.register(stop)
