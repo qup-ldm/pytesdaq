@@ -611,9 +611,12 @@ class Analyzer:
 
         
         # delete elements
-        if self._nb_events_running_avg>=self._analysis_config['nb_events_avg']:
+        # (use actual buffer size: _nb_events_running_avg may hold the
+        #  number of events passing pileup cuts, which is smaller)
+        nb_events_buffer = self._data_buffer.shape[2]
+        if nb_events_buffer>=self._analysis_config['nb_events_avg']:
 
-            nb_to_delete = self._nb_events_running_avg-self._analysis_config['nb_events_avg']+1
+            nb_to_delete = nb_events_buffer-self._analysis_config['nb_events_avg']+1
             
             # data buffer
             self._data_buffer = np.delete(self._data_buffer,
@@ -692,8 +695,9 @@ class Analyzer:
 
             for ichan in range(nb_channels):
                 cut = pileup_mask[ichan,:]
+                # shape (nb_events_pass, nb_samples) (advanced indexing)
                 data = self._data_buffer[ichan,:,cut]
-                if data.shape[1]<nb_events_min:
+                if data.shape[0]<nb_events_min:
                     nb_events_min = data.shape[0]
                 data_array[ichan,:] = np.mean(data, axis=0)
             self._nb_events_running_avg = nb_events_min

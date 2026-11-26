@@ -150,7 +150,13 @@ class Readout:
         self._config = settings.Config(setup_file=self._setup_file)
         self._adc_config = dict()
 
-        # initialize
+        # initialize (release previous NI task, if any, to avoid
+        # leaking DAQmx resources)
+        if self._daq is not None:
+            try:
+                self._daq.clear()
+            except Exception:
+                pass
         self._daq = None
         self._redis = None
         self._hdf5 = None
@@ -413,7 +419,16 @@ class Readout:
 
             if self._data_source == 'niadc':
 
-                self._daq.read_single_event(data_array, do_clear_task=False)
+                try:
+                    self._daq.read_single_event(data_array, do_clear_task=False)
+                except Exception as err:
+                    # stop display instead of letting the exception
+                    # escape the Qt slot (which aborts the application)
+                    msg = 'ERROR: DAQ read failed, display stopped: ' + str(err).split('\n')[0]
+                    print(msg)
+                    if self._is_qt_ui:
+                        self._status_bar.showMessage(msg)
+                    break
 
 
             elif self._data_source == 'hdf5':
