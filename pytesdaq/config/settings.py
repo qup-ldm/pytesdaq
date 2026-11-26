@@ -303,6 +303,20 @@ class Config:
         return data_path
 
 
+    def get_free_space_warning_gb(self):
+        """
+        Free disk space (GB) at data_path below which a warning
+        is printed before each run (0 = off, default 30)
+        """
+        threshold = 30.0
+        try:
+            threshold = float(self._get_setting(
+                'setup', 'free_space_warning_gb'))
+        except:
+            pass
+        return threshold
+
+
     def get_fridge_run(self):
         fridge_run = []
         try:

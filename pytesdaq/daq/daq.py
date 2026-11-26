@@ -1,4 +1,6 @@
 import numpy as np
+import os
+import shutil
 import time
 import struct
 
@@ -153,6 +155,28 @@ class DAQ:
         
 
 
+    def _check_free_space(self, data_path):
+        """
+        Print a warning if free disk space at data_path is below
+        free_space_warning_gb (setup.ini, default 30 GB, 0 = off)
+        """
+        try:
+            threshold = self._config.get_free_space_warning_gb()
+            if not threshold:
+                return
+            # data_path may not exist yet: use first existing parent
+            path = os.path.abspath(data_path)
+            while not os.path.exists(path):
+                path = os.path.dirname(path)
+            usage = shutil.disk_usage(path)
+        except Exception:
+            return
+        free_gb = usage.free / 1e9
+        if free_gb < threshold:
+            print(f'WARNING: Low disk space: {free_gb:.1f} GB free '
+                  f'({usage.free / usage.total:.0%}) at {data_path}!')
+
+
     def run(self, run_time=60, run_type=1, run_comment='No comment',
             group_name='None', group_comment='No comment',
             group_time=None, data_prefix='raw',
@@ -177,6 +201,9 @@ class DAQ:
         # data path
         if data_path is None:
             data_path = self._config.get_data_path()
+
+        # low disk space warning
+        self._check_free_space(data_path)
 
         # series start time
         time_now = int(round(time.time()))
