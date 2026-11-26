@@ -46,6 +46,12 @@ class IV_dIdV(Sequencer):
         # iv_didv.ini [iv_didv]), disabled by default
         self._rail_guard = rail_guard.RailGuard()
 
+        # SQUID reset at start/end of each IV/dIdV curve
+        # (set in _configure() from iv_didv.ini [iv_didv])
+        self._squid_reset_start = False
+        self._squid_reset_end = False
+        self._squid_reset_wait = 0.5
+
         # TES bias ramp (soft transition between bias points)
         # set in _configure() from "iv_didv" configuration
         self._tes_bias_ramp_step = None
@@ -483,6 +489,11 @@ class IV_dIdV(Sequencer):
                         print('INFO: Relocking channel ' + channel) 
                         self._instruments_inst.relock(detector_channel=channel)
                 
+                # SQUID reset at start of curve (first bias
+                # point set, before zeroing offset)
+                if istep == 1 and self._squid_reset_start:
+                    self._reset_squids('start of IV/dIdV curve')
+
                 # if step 1: tes zap, relock, zero
                 if istep==1:
                         
@@ -911,6 +922,10 @@ class IV_dIdV(Sequencer):
                             
             self._daq.clear()
 
+            # SQUID reset at end of curve
+            if self._squid_reset_end:
+                self._reset_squids('end of IV/dIdV curve')
+
 
         # online IV
         if (self._enable_tes_bias_sweep
@@ -1173,6 +1188,27 @@ class IV_dIdV(Sequencer):
                                       self._config, adc_setup)
 
 
+    def _reset_squids(self, reason):
+        """
+        Reset all SQUIDs (Control.reset_squid(), e.g. PCS102
+        remote), then wait squid_reset_wait seconds.
+        Failure -> warning only (rail guard still active)
+        """
+        print(f'INFO: SQUID reset ({reason})')
+        if self._dummy_mode:
+            return True
+        try:
+            ok = self._instruments_inst.reset_squid()
+        except Exception as e:
+            print(f'WARNING: SQUID reset failed: {e}')
+            return False
+        if not ok:
+            print('WARNING: SQUID reset failed!')
+            return False
+        time.sleep(self._squid_reset_wait)
+        return True
+
+
     def _guarded_run(self, adc_setup, **run_args):
         """
         self._daq.run() with SQUID rail guard: check/reset
@@ -1266,6 +1302,14 @@ class IV_dIdV(Sequencer):
                 config_dict)
             if self._rail_guard.enabled:
                 print(f'INFO: {self._rail_guard}')
+
+            # SQUID reset at start/end of each curve
+            self._squid_reset_start = rail_guard._to_bool(
+                config_dict.get('squid_reset_start', False))
+            self._squid_reset_end = rail_guard._to_bool(
+                config_dict.get('squid_reset_end', False))
+            self._squid_reset_wait = float(
+                config_dict.get('squid_reset_wait', 0.5))
 
             # Build temperature vector
             if self._enable_temperature_sweep:
