@@ -1,0 +1,10 @@
+# Template: @...@ filled from sync.conf by install.sh
+[Unit]
+Description=Copy raw DAQ data to the NAS every @SYNC_INTERVAL@
+
+[Timer]
+OnBootSec=@BOOT_DELAY@
+OnUnitActiveSec=@SYNC_INTERVAL@
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+# Template: @...@ filled from sync.conf by install.sh
+[Unit]
+Description=Copy raw DAQ data to the NAS
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=@MOUNT@
+
+[Service]
+Type=oneshot
+User=@USER@
+ExecStart=@SCRIPT@
+# low priority: don't slow down Polaris disk writes
+Nice=10
+IOSchedulingClass=idle
