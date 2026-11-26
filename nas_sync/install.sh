@@ -51,6 +51,7 @@ install_mount() {
         echo "Updated /etc/fstab (backup: $backup)"
     fi
     mkdir -p "$NAS_MOUNT"
+    rm -f /var/lib/raw-data-sync/auth_failures   # wrong password guard
     systemctl daemon-reload
 
     if mountpoint -q "$NAS_MOUNT"; then
@@ -69,9 +70,10 @@ install_sync() {
         systemd-analyze timespan "$span" > /dev/null ||
             { echo "ERROR: invalid time span \"$span\" in sync.conf"; exit 1; }
     done
-    chmod +x "$HERE/sync_raw_data.sh"
+    chmod +x "$HERE/sync_raw_data.sh" "$HERE/mount_check.sh" "$HERE/notify.sh"
     sed -e "s#@SCRIPT@#$HERE/sync_raw_data.sh#" -e "s#@USER@#$RUN_USER#" \
-        -e "s#@MOUNT@#$NAS_MOUNT#" "$HERE/raw-data-sync.service" \
+        -e "s#@MOUNT_CHECK@#$HERE/mount_check.sh#" \
+        -e "s#@NOTIFY@#$HERE/notify.sh#" "$HERE/raw-data-sync.service" \
         > /etc/systemd/system/raw-data-sync.service
     sed -e "s#@SYNC_INTERVAL@#$SYNC_INTERVAL#g" \
         -e "s#@BOOT_DELAY@#$BOOT_DELAY#g" "$HERE/raw-data-sync.timer" \

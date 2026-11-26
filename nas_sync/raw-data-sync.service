@@ -3,12 +3,15 @@
 Description=Copy raw DAQ data to the NAS
 Wants=network-online.target
 After=network-online.target
-RequiresMountsFor=@MOUNT@
 
 [Service]
 Type=oneshot
 User=@USER@
+# '+': run as root (mount the NAS, wrong password guard)
+ExecStartPre=+@MOUNT_CHECK@
 ExecStart=@SCRIPT@
+# after success and failure: desktop notification
+ExecStopPost=@NOTIFY@
 # low priority: don't slow down Polaris disk writes
 Nice=10
 IOSchedulingClass=idle

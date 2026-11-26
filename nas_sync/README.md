@@ -62,5 +62,5 @@ To change username/password: edit `~/.smbcredentials`, then `sudo umount /mnt/sy
 
 ## Failure
 
-- If the password/username are wrong, or if the mount keeps failing, an error message will usually be put on the DAQ run
-- 
+- If the password/username are wrong > 3 times it will stop trying to avoid getting locked out of the box
+- If the mount is not syncing it will produce desktop notifications saying how long it has been failing for

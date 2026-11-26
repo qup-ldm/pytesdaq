@@ -26,8 +26,8 @@ case "$DEST_DIR/" in
        exit 1 ;;
 esac
 if ! mountpoint -q "$NAS_MOUNT"; then
-    echo "WARNING: $NAS_MOUNT not mounted, skipping"
-    exit 0
+    echo "ERROR: $NAS_MOUNT not mounted, skipping"
+    exit 1
 fi
 if [ ! -d "$DEST_DIR" ]; then
     echo "ERROR: $DEST_DIR not found (create it on the NAS first)"
